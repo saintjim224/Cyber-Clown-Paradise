@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { Joker } from "@/lib/api";
 import {
   demoClowns,
   demoEvents,
@@ -28,6 +29,7 @@ type UseLiveSocialEventsResult = {
   replyToEvent: (eventId: string, responderId?: string) => void;
   replyWaitingBalloons: () => void;
   focusEvent: (eventId: string) => void;
+  addJokerToPark: (joker: Joker) => DemoClown;
 };
 
 const nicknames = ["纸杯礼帽", "红鼻便利贴", "星星鞋带", "汽水泡泡", "午后鼓点", "薄荷口哨", "奶油信封", "像素风筝"];
@@ -97,6 +99,29 @@ function makeJoinClown(index: number): DemoClown {
   };
 }
 
+function makeJokerClown(joker: Joker, index: number): DemoClown {
+  const paletteTokens = joker.style_tokens?.palette;
+  const spawnPoi = joker.social_energy === "I" ? liangjiangPois[6] : liangjiangPois[2];
+  const sampleLine = joker.soul_profile?.sample_lines?.[0] ?? joker.verdict;
+
+  return {
+    id: joker.id,
+    name: joker.nickname || `${joker.social_energy} 人小丑`,
+    role: joker.social_energy === "I" ? "低压游园" : "主动破冰",
+    energy: joker.social_energy,
+    status: "刚从灵魂工坊进入两江校区",
+    line: sampleLine,
+    action: "正在播放自己的专属动作，准备加入实时游园",
+    position: offsetPosition(spawnPoi.position, 0.00022 + index * 0.000002),
+    color: paletteTokens?.primary ?? palette[index % palette.length][0],
+    accent: paletteTokens?.accent ?? palette[index % palette.length][1],
+    image: joker.avatar_recipe?.preview_url,
+    spriteUrl: joker.avatar_recipe?.sprite_url,
+    frameSize: joker.avatar_recipe?.frame_size,
+    spriteActions: joker.avatar_recipe?.actions
+  };
+}
+
 function withBoundedEvents(events: SocialEvent[]) {
   return events.slice(-48);
 }
@@ -155,6 +180,36 @@ export function useLiveSocialEvents(): UseLiveSocialEventsResult {
 
   const focusEvent = useCallback((eventId: string) => {
     setActiveEventId(eventId);
+  }, []);
+
+  const addJokerToPark = useCallback((joker: Joker) => {
+    const existing = clownsRef.current.find((clown) => clown.id === joker.id);
+    if (existing) return existing;
+
+    const clown = makeJokerClown(joker, clownsRef.current.length + 1);
+    const poi = nearestPoi(clown.position);
+    const event: SocialEvent = {
+      id: makeId("joker"),
+      title: "专属小丑入园",
+      from: clown.id,
+      poiId: poi.id,
+      summary: `${clown.name}从灵魂工坊进入两江校区，先做了一段专属动作。`,
+      type: "wave",
+      moodDelta: 2,
+      createdAt: nowIso(),
+      status: "live",
+      path: [clown.position, poi.position]
+    };
+
+    setClowns((current) => (current.some((item) => item.id === clown.id) ? current : [...current, clown]));
+    setEvents((current) =>
+      withBoundedEvents([
+        ...current.map((item) => (item.status === "live" ? { ...item, status: "done" as const } : item)),
+        event
+      ])
+    );
+    setActiveEventId(event.id);
+    return clown;
   }, []);
 
   const joinPark = useCallback(() => {
@@ -321,6 +376,7 @@ export function useLiveSocialEvents(): UseLiveSocialEventsResult {
     dropBalloon,
     replyToEvent,
     replyWaitingBalloons,
-    focusEvent
+    focusEvent,
+    addJokerToPark
   };
 }

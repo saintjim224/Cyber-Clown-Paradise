@@ -9,6 +9,7 @@ __pycache__/
 *.pyc
 *.tsbuildinfo
 .venv/
+.venv_runtime/
 storage/
 .env
 .env.local

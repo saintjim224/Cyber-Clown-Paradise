@@ -29,6 +29,12 @@ export const soulProfileSchema = z.object({
 
 export type SoulProfile = z.infer<typeof soulProfileSchema>;
 
+export const clownSpriteActionSchema = z.object({
+  start: z.number().int().min(0),
+  frames: z.number().int().min(1),
+  fps: z.number().min(0.1),
+});
+
 export const avatarRecipeSchema = z.object({
   art_version: z.literal("native-clown-v1").or(z.string().min(1)),
   palette: z.object({
@@ -47,6 +53,12 @@ export const avatarRecipeSchema = z.object({
   hat_tilt: z.number().min(0).max(1),
   motion_style: z.string().min(1),
   material: z.string().min(1),
+  asset_id: z.string().optional(),
+  asset_pool: socialEnergySchema.optional(),
+  preview_url: z.string().optional(),
+  sprite_url: z.string().optional(),
+  frame_size: z.number().int().positive().optional(),
+  actions: z.record(clownSpriteActionSchema).optional(),
 });
 
 export type AvatarRecipe = z.infer<typeof avatarRecipeSchema>;

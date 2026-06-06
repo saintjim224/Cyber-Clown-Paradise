@@ -1,9 +1,11 @@
 "use client";
 
 import type { CSSProperties, FormEvent } from "react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Activity, CheckCircle, Clock, History, MapPin, Radio, Reply, Send, Sparkles, UserPlus, Users } from "lucide-react";
+import { ClownSprite } from "@/components/pixel/ClownSprite";
 import { useLiveSocialEvents } from "@/hooks/useLiveSocialEvents";
+import { loadActiveJoker } from "@/lib/clownAssets";
 import {
   eventStatusText,
   eventTypeText,
@@ -93,11 +95,18 @@ function isRecent(event: SocialEvent) {
 }
 
 export function ParkLive2D() {
-  const { clowns, events, activeEvent, joinPark, joinWave, dropBalloon, replyToEvent, replyWaitingBalloons, focusEvent } = useLiveSocialEvents();
+  const { clowns, events, activeEvent, joinPark, joinWave, dropBalloon, replyToEvent, replyWaitingBalloons, focusEvent, addJokerToPark } = useLiveSocialEvents();
   const [selected, setSelected] = useState<Selection>({ kind: "event", id: activeEvent?.id ?? events[0]?.id ?? "" });
   const [activeModule, setActiveModule] = useState<SocialEvent["status"]>("live");
   const [balloonText, setBalloonText] = useState("");
   const [mood, setMood] = useState(moodOptions[0]);
+
+  useEffect(() => {
+    const activeJoker = loadActiveJoker();
+    if (!activeJoker) return;
+    const clown = addJokerToPark(activeJoker);
+    setSelected({ kind: "clown", id: clown.id });
+  }, [addJokerToPark]);
 
   const bounds = useMemo(() => {
     const points = [
@@ -301,7 +310,17 @@ export function ParkLive2D() {
                 style={styleForPosition(clown.position, clown)}
                 onClick={() => setSelected({ kind: "clown", id: clown.id })}
               >
-                {clown.image ? (
+                {clown.spriteUrl ? (
+                  <ClownSprite
+                    spriteUrl={clown.spriteUrl}
+                    previewUrl={clown.image}
+                    frameSize={clown.frameSize}
+                    actions={clown.spriteActions}
+                    action={clownIsFocused(clown) ? "special" : "idle"}
+                    size={52}
+                    label={clown.name}
+                  />
+                ) : clown.image ? (
                   <img src={clown.image} alt="" />
                 ) : (
                   <span className="park-clown-sprite" aria-hidden>

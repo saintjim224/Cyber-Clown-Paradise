@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "npm run dev:web",
     "dev:web": "npm run dev -w apps/web",
+    "build:clowns": "node scripts/generate-clown-sprites.mjs",
     "build": "npm run build -w apps/web",
     "typecheck": "npm run typecheck -w apps/web && npm run typecheck -w packages/shared",
     "test": "npm run test -w packages/shared && pytest apps/api/tests",
@@ -19,6 +20,7 @@
     "docker:down": "docker compose -f infra/docker-compose.yml down"
   },
   "devDependencies": {
+    "pngjs": "^7.0.0",
     "typescript": "^5.8.3"
   }
 }

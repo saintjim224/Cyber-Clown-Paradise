@@ -7,6 +7,7 @@ import { IdentityWorkshop } from "@/components/home/IdentityWorkshop";
 import { JokerTicket } from "@/components/home/JokerTicket";
 import { SocialTaskPanel } from "@/components/home/SocialTaskPanel";
 import { SoulDraftEditor } from "@/components/home/SoulDraftEditor";
+import { ClownRevealModal } from "@/components/workshop/ClownRevealModal";
 import {
   apiFetch,
   replayUrl,
@@ -18,8 +19,9 @@ import {
   type MatchResult,
   type SoulProfile
 } from "@/lib/api";
+import { saveActiveJoker, selectClownAsset, withClownAsset } from "@/lib/clownAssets";
 
-type Step = "identity" | "draft" | "task" | "replay";
+type Step = "identity" | "task" | "replay";
 
 const mbtiOptions = ["INFP", "INFJ", "INTJ", "INTP", "ENFP", "ENTP", "ENFJ", "ESTP", "ESFP", "ISFJ", "ISTJ", "ISFP"];
 const constellationOptions = ["白羊座", "金牛座", "双子座", "巨蟹座", "狮子座", "处女座", "天秤座", "天蝎座", "射手座", "摩羯座", "水瓶座", "双鱼座"];
@@ -44,6 +46,8 @@ export function WorkshopApp() {
   const [action, setAction] = useState<HealAction | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showDraftModal, setShowDraftModal] = useState(false);
+  const [showClownReveal, setShowClownReveal] = useState(false);
 
   const qrValue = useMemo(() => (joker ? replayUrl(joker.qr_token) : ""), [joker]);
   const faceQuality = faceDescriptor?.capture_quality ?? "fallback";
@@ -74,7 +78,10 @@ export function WorkshopApp() {
       setDraft(created);
       setDraftSoul(created.soul_profile);
       setDraftVerdict(created.verdict);
-      setStep("draft");
+      setJoker(null);
+      setShowDraftModal(true);
+      setShowClownReveal(false);
+      setStep("identity");
     } catch (err) {
       setError(err instanceof Error ? err.message : "生成灵魂草案失败");
     } finally {
@@ -82,11 +89,21 @@ export function WorkshopApp() {
     }
   }
 
-  async function submitIdentity() {
+  async function generateClown() {
     if (!draft || !draftSoul) return;
     setLoading(true);
     setError(null);
     try {
+      const selectedAsset = selectClownAsset({
+        socialEnergy,
+        nickname,
+        mbti,
+        constellation,
+        soulSeed,
+        draftSoul,
+        faceDescriptor
+      });
+      const avatarRecipe = withClownAsset(draft.avatar_recipe, selectedAsset);
       const created = await apiFetch<Joker>("/api/jokers", {
         method: "POST",
         body: JSON.stringify({
@@ -98,18 +115,25 @@ export function WorkshopApp() {
           soul_seed: soulSeed,
           face_descriptor: faceDescriptor,
           soul_profile: draftSoul,
-          avatar_recipe: draft.avatar_recipe,
+          avatar_recipe: avatarRecipe,
           style_tokens: draft.style_tokens,
           verdict: draftVerdict
         })
       });
       setJoker(created);
-      setStep("task");
+      saveActiveJoker(created);
+      setShowDraftModal(false);
+      setShowClownReveal(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "创建小丑失败");
     } finally {
       setLoading(false);
     }
+  }
+
+  function enterParkAfterReveal() {
+    setShowClownReveal(false);
+    setStep("task");
   }
 
   async function submitBalloon() {
@@ -184,7 +208,7 @@ export function WorkshopApp() {
           avatar_recipe: joker.avatar_recipe
         })
       });
-      setError("已创建 Q 版形象任务；当前使用本地像素小丑 recipe 渲染。");
+      setError("已创建 Q 版形象任务；当前使用本地 2D 像素小丑素材渲染。");
     } catch (err) {
       setError(err instanceof Error ? err.message : "创建形象任务失败");
     } finally {
@@ -221,22 +245,9 @@ export function WorkshopApp() {
             />
           ) : null}
 
-          {step === "draft" && draft && draftSoul ? (
-            <SoulDraftEditor
-              draft={draft}
-              draftSoul={draftSoul}
-              draftVerdict={draftVerdict}
-              loading={loading}
-              onSoulChange={updateSoul}
-              onVerdictChange={setDraftVerdict}
-              onRegenerate={() => void generateDraft()}
-              onSubmit={() => void submitIdentity()}
-            />
-          ) : null}
-
           {joker ? <JokerTicket joker={joker} qrValue={qrValue} onCreateAvatarJob={() => void createAvatarJob()} /> : null}
 
-          {step !== "identity" && step !== "draft" && joker ? (
+          {step !== "identity" && joker ? (
             <SocialTaskPanel
               joker={joker}
               loading={loading}
@@ -257,7 +268,7 @@ export function WorkshopApp() {
             <div className="task-panel">
               <span className="pixel-kicker">REPLAY</span>
               <h3>扫码回访</h3>
-              <p className="helper">离开展台后扫二维码，能看到你的小丑在校园像素地图里替你社交的回放。</p>
+              <p className="helper">离开展台后扫码，可以看到你的小丑在校园地图里替你社交的回放。</p>
               <a className="secondary-button" href={`/replay/${joker.qr_token}`}>打开回放页</a>
             </div>
           ) : null}
@@ -270,17 +281,17 @@ export function WorkshopApp() {
             <div>
               <span className="pixel-kicker">NEXT STOPS</span>
               <h2>生成后去哪里玩</h2>
-              <p>工坊只负责把你的脸谱和灵魂做成小丑，地图、直播、回放都拆成独立关卡。</p>
+              <p>工坊负责把你的脸谱和灵魂做成小丑，地图、直播、回放都拆成独立关卡。</p>
             </div>
           </div>
           <div className="module-sign-list">
             <a className="module-sign module-sign--map" href="/map">
               <span>校园地图</span>
-              <strong>缩放探索西政像素校区</strong>
+              <strong>缩放探索西政两江校区</strong>
             </a>
             <a className="module-sign module-sign--park" href="/park">
               <span>乐园直播</span>
-              <strong>看小丑替你自主社交</strong>
+              <strong>看小丑替你实时游园</strong>
             </a>
             <a className="module-sign module-sign--replay" href={joker ? `/replay/${joker.qr_token}` : "/replay/demo"}>
               <span>回放入口</span>
@@ -289,6 +300,26 @@ export function WorkshopApp() {
           </div>
         </aside>
       </div>
+
+      {draft && draftSoul && showDraftModal ? (
+        <div className="draft-confirm" role="dialog" aria-modal="true" aria-labelledby="draftConfirmTitle">
+          <div className="draft-confirm__card">
+            <SoulDraftEditor
+              draft={draft}
+              draftSoul={draftSoul}
+              draftVerdict={draftVerdict}
+              loading={loading}
+              titleId="draftConfirmTitle"
+              onSoulChange={updateSoul}
+              onVerdictChange={setDraftVerdict}
+              onRegenerate={() => void generateDraft()}
+              onSubmit={() => void generateClown()}
+            />
+          </div>
+        </div>
+      ) : null}
+
+      {joker && showClownReveal ? <ClownRevealModal joker={joker} onEnterPark={enterParkAfterReveal} /> : null}
     </main>
   );
 }

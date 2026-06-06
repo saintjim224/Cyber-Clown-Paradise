@@ -1,6 +1,6 @@
 "use client";
 
-import { RefreshCcw, Save, Sparkles } from "lucide-react";
+import { RefreshCcw, Sparkles, WandSparkles } from "lucide-react";
 import { PixelAvatarBadge } from "@/components/pixel/PixelAvatarBadge";
 import type { JokerDraft, SoulProfile } from "@/lib/api";
 
@@ -13,6 +13,7 @@ type SoulDraftEditorProps = {
   onVerdictChange: (value: string) => void;
   onRegenerate: () => void;
   onSubmit: () => void;
+  titleId?: string;
 };
 
 function joinLines(lines: string[]) {
@@ -35,20 +36,21 @@ export function SoulDraftEditor({
   onSoulChange,
   onVerdictChange,
   onRegenerate,
-  onSubmit
+  onSubmit,
+  titleId
 }: SoulDraftEditorProps) {
   return (
     <div className="task-panel">
       <div className="section-title">
         <div>
           <span className="pixel-kicker">STEP 02</span>
-          <h2>小丑灵魂草案</h2>
-          <p>确认后，这只小丑会用同一套灵魂和形象进入校园地图。</p>
+          <h2 id={titleId}>小丑灵魂草案</h2>
+          <p>确认这套灵魂设定后，再生成一只会进入两江校区实时游园的 2D 像素小丑。</p>
         </div>
         <Sparkles color="var(--color-sky)" aria-hidden />
       </div>
       <div className="avatar-draft-row">
-        <PixelAvatarBadge recipe={draft.avatar_recipe} label="预览" />
+        <PixelAvatarBadge recipe={draft.avatar_recipe} label="草案预览" />
         <div className="swatch-row" aria-label="小丑配色">
           {Object.values(draft.avatar_recipe.palette).map((color) => (
             <span key={color} className="color-swatch" style={{ background: color }} />
@@ -80,14 +82,14 @@ export function SoulDraftEditor({
           <label htmlFor="boundaries">社交边界</label>
           <textarea id="boundaries" value={joinLines(draftSoul.social_boundaries)} onChange={(event) => onSoulChange("social_boundaries", splitLines(event.target.value))} />
         </div>
-        <div className="task-actions">
+        <div className="draft-action-stack">
           <button className="secondary-button" type="button" disabled={loading} onClick={onRegenerate}>
             <RefreshCcw size={18} aria-hidden />
-            重生成
+            重新生成草案
           </button>
           <button className="primary-button" type="button" disabled={loading || !draftSoul.core_personality || !draftVerdict} onClick={onSubmit}>
-            <Save size={18} aria-hidden />
-            确认入园
+            <WandSparkles size={18} aria-hidden />
+            {loading ? "生成中" : "生成小丑"}
           </button>
         </div>
       </div>

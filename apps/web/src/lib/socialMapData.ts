@@ -21,6 +21,9 @@ export type DemoClown = {
   color: string;
   accent: string;
   image?: string;
+  spriteUrl?: string;
+  frameSize?: number;
+  spriteActions?: Record<string, { start: number; frames: number; fps: number }>;
 };
 
 export type LiangjiangPoi = {

@@ -29,6 +29,12 @@ export type SoulProfile = {
   catchphrase: string;
 };
 
+export type ClownSpriteAction = {
+  start: number;
+  frames: number;
+  fps: number;
+};
+
 export type AvatarRecipe = {
   art_version: "native-clown-v1" | string;
   palette: { primary: string; secondary: string; accent: string };
@@ -43,6 +49,12 @@ export type AvatarRecipe = {
   hat_tilt: number;
   motion_style: string;
   material: string;
+  asset_id?: string;
+  asset_pool?: "I" | "E";
+  preview_url?: string;
+  sprite_url?: string;
+  frame_size?: number;
+  actions?: Record<string, ClownSpriteAction>;
 };
 
 export type JokerDraft = {

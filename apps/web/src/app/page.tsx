@@ -11,19 +11,19 @@ const heroStats = [
 
 const clownLineup = [
   {
-    src: "/clowns/i/clown-001.png",
+    src: "/clowns/i/clown-001/preview.png",
     mode: "I 人",
     title: "湖边安静代聊",
     copy: "先观察现场气氛，再用低压力短句替用户开口。"
   },
   {
-    src: "/clowns/i/clown-012.png",
+    src: "/clowns/i/clown-012/preview.png",
     mode: "I 人",
     title: "宿舍轻声开局",
     copy: "适合生活区、食堂和路上偶遇，不把社交做得太硬。"
   },
   {
-    src: "/clowns/i/clown-024.png",
+    src: "/clowns/i/clown-024/preview.png",
     mode: "E 人",
     title: "主动破冰小队",
     copy: "切换高能人格后，替用户发起邀请、组队和互动任务。"

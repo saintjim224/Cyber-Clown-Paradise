@@ -117,16 +117,62 @@ function descriptorFromPixels(canvas: HTMLCanvasElement): FaceDescriptor {
   };
 }
 
+function isMediapipeRuntimeInfo(args: unknown[]) {
+  return args.some((item) => typeof item === "string" && item.includes("Created TensorFlow Lite XNNPACK delegate for CPU"));
+}
+
+function ensureMediapipeRuntimeInfoSilenced() {
+  const patchedConsole = console as Console & { __cyberjokerMediapipeRuntimeInfoSilenced?: true };
+  if (patchedConsole.__cyberjokerMediapipeRuntimeInfoSilenced) return;
+  patchedConsole.__cyberjokerMediapipeRuntimeInfoSilenced = true;
+
+  const originalError = console.error.bind(console);
+  const originalWarn = console.warn.bind(console);
+
+  console.error = (...args: unknown[]) => {
+    if (isMediapipeRuntimeInfo(args)) return;
+    originalError(...args);
+  };
+  console.warn = (...args: unknown[]) => {
+    if (isMediapipeRuntimeInfo(args)) return;
+    originalWarn(...args);
+  };
+}
+
+async function withSilencedMediapipeRuntimeInfo<T>(run: () => T | Promise<T>): Promise<T> {
+  const originalError = console.error;
+  const originalWarn = console.warn;
+
+  console.error = (...args: unknown[]) => {
+    if (isMediapipeRuntimeInfo(args)) return;
+    originalError(...args);
+  };
+  console.warn = (...args: unknown[]) => {
+    if (isMediapipeRuntimeInfo(args)) return;
+    originalWarn(...args);
+  };
+
+  try {
+    return await run();
+  } finally {
+    console.error = originalError;
+    console.warn = originalWarn;
+  }
+}
+
 async function loadLandmarker(): Promise<FaceLandmarkerInstance | null> {
   try {
+    ensureMediapipeRuntimeInfoSilenced();
     const { FaceLandmarker, FilesetResolver } = await import("@mediapipe/tasks-vision");
     const fileset = await FilesetResolver.forVisionTasks(MEDIAPIPE_WASM);
-    return FaceLandmarker.createFromOptions(fileset, {
-      baseOptions: { modelAssetPath: FACE_MODEL, delegate: "GPU" },
-      outputFaceBlendshapes: true,
-      runningMode: "IMAGE",
-      numFaces: 1
-    });
+    return await withSilencedMediapipeRuntimeInfo(() =>
+      FaceLandmarker.createFromOptions(fileset, {
+        baseOptions: { modelAssetPath: FACE_MODEL, delegate: "GPU" },
+        outputFaceBlendshapes: true,
+        runningMode: "IMAGE",
+        numFaces: 1
+      })
+    );
   } catch {
     return null;
   }
@@ -135,9 +181,14 @@ async function loadLandmarker(): Promise<FaceLandmarkerInstance | null> {
 async function analyzeCanvas(canvas: HTMLCanvasElement): Promise<FaceDescriptor> {
   const landmarker = await loadLandmarker();
   if (!landmarker) return descriptorFromPixels(canvas);
-  const result = landmarker.detect(canvas);
-  landmarker.close();
-  return descriptorFromLandmarks(result) ?? descriptorFromPixels(canvas);
+  try {
+    const result = await withSilencedMediapipeRuntimeInfo(() => landmarker.detect(canvas));
+    return descriptorFromLandmarks(result) ?? descriptorFromPixels(canvas);
+  } catch {
+    return descriptorFromPixels(canvas);
+  } finally {
+    landmarker.close();
+  }
 }
 
 function drawVideo(video: HTMLVideoElement) {

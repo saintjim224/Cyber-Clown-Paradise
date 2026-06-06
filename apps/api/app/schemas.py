@@ -32,6 +32,12 @@ class SoulProfile(BaseModel):
     catchphrase: str = Field(min_length=1, max_length=80)
 
 
+class ClownSpriteAction(BaseModel):
+    start: int = Field(ge=0)
+    frames: int = Field(ge=1)
+    fps: float = Field(gt=0)
+
+
 class AvatarRecipe(BaseModel):
     art_version: str = "native-clown-v1"
     palette: dict[str, str]
@@ -46,6 +52,12 @@ class AvatarRecipe(BaseModel):
     hat_tilt: float = Field(default=0.5, ge=0, le=1)
     motion_style: str = "gentle-float"
     material: str = "soft-vinyl"
+    asset_id: str | None = None
+    asset_pool: str | None = Field(default=None, pattern="^[IE]$")
+    preview_url: str | None = None
+    sprite_url: str | None = None
+    frame_size: int | None = Field(default=None, gt=0)
+    actions: dict[str, ClownSpriteAction] | None = None
 
 
 class JokerDraftCreate(BaseModel):

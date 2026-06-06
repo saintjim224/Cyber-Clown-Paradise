@@ -1,6 +1,7 @@
 "use client";
 
 import { Upload } from "lucide-react";
+import { ClownSprite } from "@/components/pixel/ClownSprite";
 import { PixelAvatarBadge } from "@/components/pixel/PixelAvatarBadge";
 import { QRCodeBox } from "@/components/QRCodeBox";
 import type { Joker } from "@/lib/api";
@@ -12,6 +13,8 @@ type JokerTicketProps = {
 };
 
 export function JokerTicket({ joker, qrValue, onCreateAvatarJob }: JokerTicketProps) {
+  const label = joker.social_energy === "I" ? "I 人小丑" : "E 人小丑";
+
   return (
     <div className="joker-card">
       <div className="section-title">
@@ -24,7 +27,13 @@ export function JokerTicket({ joker, qrValue, onCreateAvatarJob }: JokerTicketPr
         </button>
       </div>
       <div className="joker-card__body">
-        <PixelAvatarBadge joker={joker} label={joker.social_energy === "I" ? "I 人小丑" : "E 人小丑"} />
+        <ClownSprite
+          recipe={joker.avatar_recipe}
+          action="idle"
+          size={112}
+          label={label}
+          fallback={<PixelAvatarBadge joker={joker} label={label} />}
+        />
         <div>
           <p className="verdict">{joker.verdict}</p>
           <p className="helper">{joker.persona}</p>
