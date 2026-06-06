@@ -1,0 +1,142 @@
+export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
+
+export type StyleTokens = {
+  palette: { primary: string; secondary: string; accent: string };
+  material: string;
+  motion: string;
+  aura: string;
+};
+
+export type FaceDescriptor = {
+  face_roundness: number;
+  eye_spacing: number;
+  eye_size: number;
+  brow_lift: number;
+  smile_curve: number;
+  mouth_width: number;
+  cheek_fullness: number;
+  nose_scale: number;
+  head_tilt: number;
+  confidence: number;
+  capture_quality: "good" | "ok" | "low" | "fallback";
+};
+
+export type SoulProfile = {
+  core_personality: string;
+  behavior_rules: string[];
+  sample_lines: string[];
+  social_boundaries: string[];
+  catchphrase: string;
+};
+
+export type AvatarRecipe = {
+  art_version: "native-clown-v1" | string;
+  palette: { primary: string; secondary: string; accent: string };
+  head_scale: number;
+  body_scale: number;
+  eye_spacing: number;
+  eye_size: number;
+  nose_scale: number;
+  cheek_scale: number;
+  mouth_width: number;
+  hat_height: number;
+  hat_tilt: number;
+  motion_style: string;
+  material: string;
+};
+
+export type JokerDraft = {
+  soul_profile: SoulProfile;
+  verdict: string;
+  persona: string;
+  style_tokens: StyleTokens;
+  avatar_recipe: AvatarRecipe;
+};
+
+export type Joker = {
+  id: string;
+  nickname: string | null;
+  mbti: string;
+  constellation: string;
+  social_energy: "I" | "E";
+  persona: string;
+  verdict: string;
+  qr_token: string;
+  style_tokens: StyleTokens;
+  soul_profile: SoulProfile | null;
+  avatar_recipe: AvatarRecipe | null;
+  avatar_status: string | null;
+};
+
+export type Balloon = {
+  id: string;
+  owner_id: string;
+  emo_text: string;
+  safe_summary: string;
+  status: string;
+  healed_by_id: string | null;
+};
+
+export type MatchResult = {
+  balloon_id: string;
+  owner_id: string;
+  score: number;
+  reason: string;
+  suggested_action: string;
+  prompt: string;
+};
+
+export type HealAction = {
+  id: string;
+  healer_id: string;
+  balloon_id: string;
+  action_type: string;
+  cheer_text: string;
+  match_score: number;
+  match_reason: string;
+};
+
+export type ParkEvent = {
+  id: string;
+  actor_id: string;
+  target_id: string | null;
+  action_type: string;
+  dialogue: string;
+  animation_clip: string;
+  mood_delta: number;
+  position_path: number[][];
+  source: string;
+  created_at: string;
+};
+
+export type Replay = {
+  joker: Joker;
+  balloons: Balloon[];
+  actions: HealAction[];
+  events: ParkEvent[];
+  headline: string;
+  share_text: string;
+};
+
+export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers: {
+      "content-type": "application/json",
+      ...init?.headers
+    },
+    cache: "no-store"
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Request failed: ${response.status}`);
+  }
+  return response.json() as Promise<T>;
+}
+
+export function replayUrl(token: string) {
+  if (typeof window === "undefined") {
+    return `/replay/${token}`;
+  }
+  return `${window.location.origin}/replay/${token}`;
+}

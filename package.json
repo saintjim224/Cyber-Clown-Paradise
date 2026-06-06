@@ -1,0 +1,24 @@
+{
+  "name": "cyberjoker-park",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CyberJoker Park Web/PWA hackathon MVP.",
+  "workspaces": [
+    "apps/web",
+    "packages/shared"
+  ],
+  "scripts": {
+    "dev": "npm run dev:web",
+    "dev:web": "npm run dev -w apps/web",
+    "build": "npm run build -w apps/web",
+    "typecheck": "npm run typecheck -w apps/web && npm run typecheck -w packages/shared",
+    "test": "npm run test -w packages/shared && pytest apps/api/tests",
+    "api": "uvicorn app.main:app --reload --app-dir apps/api",
+    "worker": "python -m app.worker",
+    "docker:up": "docker compose -f infra/docker-compose.yml up --build",
+    "docker:down": "docker compose -f infra/docker-compose.yml down"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  }
+}
