@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.mutable import MutableDict, MutableList
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -60,13 +60,17 @@ class JokerProfile(Base, TimestampMixin):
     avatar_recipe: Mapped[dict | None] = mapped_column(MutableDict.as_mutable(json_type()), nullable=True)
     face_descriptor: Mapped[dict | None] = mapped_column(MutableDict.as_mutable(json_type()), nullable=True)
     avatar_status: Mapped[str] = mapped_column(String(24), default="recipe_ready")
+    energy_score: Mapped[int] = mapped_column(Integer, default=0)
 
     owner_session: Mapped[UserSession | None] = relationship(back_populates="joker")
     balloons: Mapped[list["EmoBalloon"]] = relationship(
         back_populates="owner",
         foreign_keys="EmoBalloon.owner_id",
     )
-    actions: Mapped[list["HealAction"]] = relationship(back_populates="healer")
+    actions: Mapped[list["HealAction"]] = relationship(
+        back_populates="healer",
+        foreign_keys="HealAction.healer_id",
+    )
 
 
 class EmoBalloon(Base, TimestampMixin):
@@ -89,14 +93,34 @@ class HealAction(Base, TimestampMixin):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("act"))
     healer_id: Mapped[str] = mapped_column(ForeignKey("joker_profiles.id"), index=True)
+    recipient_id: Mapped[str | None] = mapped_column(ForeignKey("joker_profiles.id"), nullable=True, index=True)
     balloon_id: Mapped[str] = mapped_column(ForeignKey("emo_balloons.id"), index=True)
     action_type: Mapped[str] = mapped_column(String(24))
     cheer_text: Mapped[str] = mapped_column(Text)
     match_score: Mapped[float] = mapped_column(Float, default=0.0)
     match_reason: Mapped[str] = mapped_column(Text)
+    energy_delta_healer: Mapped[int] = mapped_column(Integer, default=1)
+    energy_delta_owner: Mapped[int] = mapped_column(Integer, default=2)
+    affinity_delta: Mapped[int] = mapped_column(Integer, default=3)
     media_asset_id: Mapped[str | None] = mapped_column(ForeignKey("media_assets.id"), nullable=True)
 
-    healer: Mapped[JokerProfile] = relationship(back_populates="actions")
+    healer: Mapped[JokerProfile] = relationship(back_populates="actions", foreign_keys=[healer_id])
+
+
+class JokerRelationship(Base, TimestampMixin):
+    __tablename__ = "joker_relationships"
+    __table_args__ = (
+        UniqueConstraint("joker_a_id", "joker_b_id", name="ux_joker_relationship_pair"),
+        Index("ix_joker_relationships_joker_a_id", "joker_a_id"),
+        Index("ix_joker_relationships_joker_b_id", "joker_b_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("rel"))
+    joker_a_id: Mapped[str] = mapped_column(ForeignKey("joker_profiles.id"))
+    joker_b_id: Mapped[str] = mapped_column(ForeignKey("joker_profiles.id"))
+    affinity_score: Mapped[int] = mapped_column(Integer, default=0)
+    interaction_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_action_id: Mapped[str | None] = mapped_column(ForeignKey("heal_actions.id"), nullable=True)
 
 
 class InteractionEvent(Base, TimestampMixin):

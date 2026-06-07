@@ -2,12 +2,13 @@ import math
 import secrets
 from datetime import datetime, timezone
 
-from sqlalchemy import desc, select
+from sqlalchemy import desc, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.ai_adapter import JokerAIAdapter
 from app.config import Settings
-from app.models import AvatarJob, EmoBalloon, HealAction, InteractionEvent, JokerProfile, ModerationLog
+from app.models import AvatarJob, EmoBalloon, HealAction, InteractionEvent, JokerProfile, JokerRelationship, ModerationLog
 from app.safety import clamp_joker_line, moderate_text
 from app.schemas import (
     AvatarJobCreate,
@@ -16,8 +17,13 @@ from app.schemas import (
     JokerCreate,
     JokerDraftCreate,
     JokerDraftOut,
+    JokerBriefOut,
     MatchOut,
 )
+
+HEALER_ENERGY_DELTA = 1
+OWNER_ENERGY_DELTA = 2
+AFFINITY_DELTA = 3
 
 
 def _simple_embedding(text: str) -> list[float]:
@@ -235,11 +241,28 @@ class HealService:
         return MatchOut(
             balloon_id=balloon.id,
             owner_id=owner.id,
+            balloon_summary=balloon.safe_summary,
+            owner=JokerBriefOut.model_validate(owner),
             score=round(score, 4),
             reason=reason,
             suggested_action=action_type,
             prompt=f"对着镜头做一个 {action_type}，再留一句不超过 40 字的转运话。",
         )
+
+    async def _relationship_for(self, left_id: str, right_id: str) -> JokerRelationship:
+        joker_a_id, joker_b_id = sorted([left_id, right_id])
+        result = await self.session.execute(
+            select(JokerRelationship).where(
+                JokerRelationship.joker_a_id == joker_a_id,
+                JokerRelationship.joker_b_id == joker_b_id,
+            )
+        )
+        relationship = result.scalar_one_or_none()
+        if relationship:
+            return relationship
+        relationship = JokerRelationship(joker_a_id=joker_a_id, joker_b_id=joker_b_id)
+        self.session.add(relationship)
+        return relationship
 
     async def submit_action(self, payload: HealActionCreate, owner_session_id: str) -> HealAction:
         healer = await self._current_joker(owner_session_id)
@@ -248,11 +271,11 @@ class HealService:
             raise ValueError("balloon_not_found")
         if balloon.owner_id == healer.id:
             raise ValueError("cannot_heal_own_balloon")
+        owner = await self.session.get(JokerProfile, balloon.owner_id)
+        if not owner:
+            raise ValueError("balloon_owner_not_found")
         match = await self.find_match(owner_session_id, payload.action_type)
         if match.balloon_id != payload.balloon_id:
-            owner = await self.session.get(JokerProfile, balloon.owner_id)
-            if not owner:
-                raise ValueError("balloon_owner_not_found")
             semantic = _cosine(healer.embedding, balloon.embedding)
             energy_bonus = 0.22 if healer.social_energy == "E" and owner.social_energy == "I" else 0.08
             mbti_bonus = 0.15 if healer.mbti[0] != owner.mbti[0] else 0.04
@@ -280,17 +303,28 @@ class HealService:
             cheer = "这句先交给安全员看一眼，小丑已经把善意保留下来了。"
         action = HealAction(
             healer_id=healer.id,
+            recipient_id=owner.id,
             balloon_id=payload.balloon_id,
             action_type=payload.action_type,
             cheer_text=cheer,
             match_score=score,
             match_reason=reason,
+            energy_delta_healer=HEALER_ENERGY_DELTA,
+            energy_delta_owner=OWNER_ENERGY_DELTA,
+            affinity_delta=AFFINITY_DELTA,
             media_asset_id=payload.media_asset_id,
         )
         balloon.status = "healed"
         balloon.healed_by_id = healer.id
+        healer.energy_score = (healer.energy_score or 0) + HEALER_ENERGY_DELTA
+        owner.energy_score = (owner.energy_score or 0) + OWNER_ENERGY_DELTA
         event = await self.ai.generate_event(healer.id, balloon.safe_summary, payload.action_type)
         self.session.add(action)
+        await self.session.flush()
+        relationship = await self._relationship_for(healer.id, owner.id)
+        relationship.affinity_score = (relationship.affinity_score or 0) + AFFINITY_DELTA
+        relationship.interaction_count = (relationship.interaction_count or 0) + 1
+        relationship.last_action_id = action.id
         self.session.add(
             InteractionEvent(
                 actor_id=healer.id,
@@ -312,6 +346,29 @@ class ReplayService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
+    def _reply_record(
+        self,
+        action: HealAction,
+        balloon: EmoBalloon,
+        responder: JokerProfile,
+        recipient: JokerProfile,
+    ) -> dict:
+        return {
+            "id": action.id,
+            "balloon_id": balloon.id,
+            "balloon_summary": balloon.safe_summary,
+            "responder": JokerBriefOut.model_validate(responder),
+            "recipient": JokerBriefOut.model_validate(recipient),
+            "action_type": action.action_type,
+            "cheer_text": action.cheer_text,
+            "match_score": action.match_score,
+            "match_reason": action.match_reason,
+            "energy_delta_healer": action.energy_delta_healer,
+            "energy_delta_owner": action.energy_delta_owner,
+            "affinity_delta": action.affinity_delta,
+            "created_at": action.created_at,
+        }
+
     async def get_by_token(self, token: str):
         result = await self.session.execute(select(JokerProfile).where(JokerProfile.qr_token == token))
         joker = result.scalar_one_or_none()
@@ -328,6 +385,28 @@ class ReplayService:
                 .order_by(HealAction.created_at)
             )
         ).scalars().all()
+        responder = aliased(JokerProfile)
+        recipient = aliased(JokerProfile)
+        received_rows = (
+            await self.session.execute(
+                select(HealAction, EmoBalloon, responder, recipient)
+                .join(EmoBalloon, HealAction.balloon_id == EmoBalloon.id)
+                .join(responder, HealAction.healer_id == responder.id)
+                .join(recipient, HealAction.recipient_id == recipient.id)
+                .where(HealAction.recipient_id == joker.id)
+                .order_by(desc(HealAction.created_at))
+            )
+        ).all()
+        sent_rows = (
+            await self.session.execute(
+                select(HealAction, EmoBalloon, responder, recipient)
+                .join(EmoBalloon, HealAction.balloon_id == EmoBalloon.id)
+                .join(responder, HealAction.healer_id == responder.id)
+                .join(recipient, HealAction.recipient_id == recipient.id)
+                .where(HealAction.healer_id == joker.id)
+                .order_by(desc(HealAction.created_at))
+            )
+        ).all()
         events = (
             await self.session.execute(
                 select(InteractionEvent)
@@ -335,7 +414,52 @@ class ReplayService:
                 .order_by(InteractionEvent.created_at)
             )
         ).scalars().all()
-        return joker, list(balloons), list(actions), list(events)
+        relationship_rows = (
+            await self.session.execute(
+                select(JokerRelationship)
+                .where(
+                    or_(
+                        JokerRelationship.joker_a_id == joker.id,
+                        JokerRelationship.joker_b_id == joker.id,
+                    )
+                )
+                .order_by(desc(JokerRelationship.updated_at))
+            )
+        ).scalars().all()
+        other_ids = {
+            relationship.joker_b_id if relationship.joker_a_id == joker.id else relationship.joker_a_id
+            for relationship in relationship_rows
+        }
+        other_jokers: dict[str, JokerProfile] = {}
+        if other_ids:
+            others = (
+                await self.session.execute(select(JokerProfile).where(JokerProfile.id.in_(other_ids)))
+            ).scalars().all()
+            other_jokers = {item.id: item for item in others}
+        relationships = []
+        for relationship in relationship_rows:
+            other_id = relationship.joker_b_id if relationship.joker_a_id == joker.id else relationship.joker_a_id
+            other = other_jokers.get(other_id)
+            if not other:
+                continue
+            relationships.append(
+                {
+                    "joker": JokerBriefOut.model_validate(other),
+                    "affinity_score": relationship.affinity_score,
+                    "interaction_count": relationship.interaction_count,
+                    "last_action_id": relationship.last_action_id,
+                    "updated_at": relationship.updated_at,
+                }
+            )
+        received_replies = [
+            self._reply_record(action, balloon, row_responder, row_recipient)
+            for action, balloon, row_responder, row_recipient in received_rows
+        ]
+        sent_replies = [
+            self._reply_record(action, balloon, row_responder, row_recipient)
+            for action, balloon, row_responder, row_recipient in sent_rows
+        ]
+        return joker, list(balloons), list(actions), list(events), received_replies, sent_replies, relationships
 
 
 class AvatarService:

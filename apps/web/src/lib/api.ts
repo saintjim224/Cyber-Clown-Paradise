@@ -79,6 +79,16 @@ export type Joker = {
   soul_profile: SoulProfile | null;
   avatar_recipe: AvatarRecipe | null;
   avatar_status: string | null;
+  energy_score: number;
+};
+
+export type JokerBrief = {
+  id: string;
+  nickname: string | null;
+  mbti: string;
+  constellation: string;
+  social_energy: "I" | "E";
+  energy_score: number;
 };
 
 export type Balloon = {
@@ -93,6 +103,8 @@ export type Balloon = {
 export type MatchResult = {
   balloon_id: string;
   owner_id: string;
+  balloon_summary: string;
+  owner: JokerBrief;
   score: number;
   reason: string;
   suggested_action: string;
@@ -102,11 +114,15 @@ export type MatchResult = {
 export type HealAction = {
   id: string;
   healer_id: string;
+  recipient_id: string | null;
   balloon_id: string;
   action_type: string;
   cheer_text: string;
   match_score: number;
   match_reason: string;
+  energy_delta_healer: number;
+  energy_delta_owner: number;
+  affinity_delta: number;
 };
 
 export type ParkEvent = {
@@ -127,8 +143,36 @@ export type Replay = {
   balloons: Balloon[];
   actions: HealAction[];
   events: ParkEvent[];
+  received_replies: ReplyRecord[];
+  sent_replies: ReplyRecord[];
+  relationships: RelationshipRecord[];
+  energy_score: number;
   headline: string;
   share_text: string;
+};
+
+export type ReplyRecord = {
+  id: string;
+  balloon_id: string;
+  balloon_summary: string;
+  responder: JokerBrief;
+  recipient: JokerBrief;
+  action_type: string;
+  cheer_text: string;
+  match_score: number;
+  match_reason: string;
+  energy_delta_healer: number;
+  energy_delta_owner: number;
+  affinity_delta: number;
+  created_at: string;
+};
+
+export type RelationshipRecord = {
+  joker: JokerBrief;
+  affinity_score: number;
+  interaction_count: number;
+  last_action_id: string | null;
+  updated_at: string;
 };
 
 function currentSiteOrigin() {

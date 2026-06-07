@@ -10,7 +10,7 @@ import { SoulDraftEditor } from "@/components/home/SoulDraftEditor";
 import { ClownRevealModal } from "@/components/workshop/ClownRevealModal";
 import {
   apiFetch,
-  parkEntryUrl,
+  replayUrl,
   type Balloon,
   type FaceDescriptor,
   type HealAction,
@@ -49,7 +49,7 @@ export function WorkshopApp() {
   const [showDraftModal, setShowDraftModal] = useState(false);
   const [showClownReveal, setShowClownReveal] = useState(false);
 
-  const qrValue = useMemo(() => (joker ? parkEntryUrl(joker.qr_token) : ""), [joker]);
+  const qrValue = useMemo(() => (joker ? replayUrl(joker.qr_token) : ""), [joker]);
   const faceQuality = faceDescriptor?.capture_quality ?? "fallback";
 
   function updateSoul<K extends keyof SoulProfile>(field: K, value: SoulProfile[K]) {
@@ -266,8 +266,8 @@ export function WorkshopApp() {
           {step === "replay" && joker ? (
             <div className="task-panel">
               <span className="pixel-kicker">REPLAY</span>
-              <h3>私密入园码</h3>
-              <p className="helper">离开展台后扫码，直接进入小丑乐园投放气球，也可以查看这只小丑的行为回放。</p>
+              <h3>私密回放码</h3>
+              <p className="helper">离开展台后扫码，先查看别人给这只小丑的气球回应，再进入小丑乐园继续投放气球。</p>
               <a className="secondary-button" href={`/replay/${joker.qr_token}`}>打开回放页</a>
             </div>
           ) : null}

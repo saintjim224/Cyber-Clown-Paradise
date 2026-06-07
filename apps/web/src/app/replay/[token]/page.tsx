@@ -4,6 +4,31 @@ import { PixelAvatarBadge } from "@/components/pixel/PixelAvatarBadge";
 import { QRCodeBox } from "@/components/QRCodeBox";
 import { API_BASE, type Replay } from "@/lib/api";
 
+const actionText: Record<string, string> = {
+  hug: "拥抱",
+  pet: "摸头",
+  cheer: "加油",
+  dance: "转运舞"
+};
+
+const replyTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
+  hour: "2-digit",
+  minute: "2-digit",
+  month: "2-digit",
+  day: "2-digit",
+  timeZone: "Asia/Shanghai"
+});
+
+function jokerName(joker: { id: string; nickname: string | null }) {
+  return joker.nickname || joker.id;
+}
+
+function replyTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "--:--";
+  return replyTimeFormatter.format(date);
+}
+
 async function loadReplay(token: string): Promise<Replay | null> {
   try {
     const response = await fetch(`${API_BASE}/api/replay/${token}`, { cache: "no-store" });
@@ -46,9 +71,42 @@ export default async function ReplayPage({ params }: { params: Promise<{ token: 
               <div>
                 <h2>{replay.joker.nickname || replay.joker.id}</h2>
                 <p className="verdict">{replay.joker.verdict}</p>
-                <p className="helper">{replay.joker.mbti} / {replay.joker.constellation} / {replay.joker.social_energy} 人小丑</p>
+                <p className="helper">{replay.joker.mbti} / {replay.joker.constellation} / {replay.joker.social_energy} 人小丑 · 能量 {replay.energy_score}</p>
               </div>
             </div>
+          </div>
+          <div className="task-panel replay-inbox-panel">
+            <h3>给我的气球回应</h3>
+            {replay.received_replies.length === 0 ? <p className="helper">还没有人接住这只小丑放出的气球。</p> : null}
+            {replay.received_replies.map((reply) => (
+              <div className="event-row replay-reply-row" key={reply.id}>
+                <strong>{jokerName(reply.responder)} 用{actionText[reply.action_type] ?? reply.action_type}回应了你</strong>
+                <span>“{reply.cheer_text}”</span>
+                <span className="event-meta">气球：{reply.balloon_summary}</span>
+                <span className="event-meta">主人能量 +{reply.energy_delta_owner} · 亲密度 +{reply.affinity_delta} · {replyTime(reply.created_at)}</span>
+              </div>
+            ))}
+          </div>
+          <div className="task-panel">
+            <h3>我送出的回应</h3>
+            {replay.sent_replies.length === 0 ? <p className="helper">这只小丑暂时还没有接住别人的气球。</p> : null}
+            {replay.sent_replies.map((reply) => (
+              <div className="event-row" key={reply.id}>
+                <strong>送给 {jokerName(reply.recipient)} · {actionText[reply.action_type] ?? reply.action_type}</strong>
+                <span>{reply.cheer_text}</span>
+                <span className="event-meta">回应者能量 +{reply.energy_delta_healer} · {replyTime(reply.created_at)}</span>
+              </div>
+            ))}
+          </div>
+          <div className="task-panel">
+            <h3>亲密度关系</h3>
+            {replay.relationships.length === 0 ? <p className="helper">还没有形成稳定的接力关系。</p> : null}
+            {replay.relationships.map((relationship) => (
+              <div className="event-row" key={relationship.joker.id}>
+                <strong>{jokerName(relationship.joker)} · 亲密度 {relationship.affinity_score}</strong>
+                <span>{relationship.interaction_count} 次气球回应接力</span>
+              </div>
+            ))}
           </div>
           <div className="task-panel">
             <h3>气球结果</h3>
@@ -85,7 +143,7 @@ export default async function ReplayPage({ params }: { params: Promise<{ token: 
             </span>
           </div>
           <div style={{ marginTop: 16 }}>
-            <QRCodeBox value={`/park/join/${token}`} />
+            <QRCodeBox value={`/replay/${token}`} />
           </div>
         </section>
         <ParkExperiencePanel joker={replay.joker} events={replay.events} />

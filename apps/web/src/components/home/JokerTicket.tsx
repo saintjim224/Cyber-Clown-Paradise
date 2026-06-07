@@ -46,7 +46,7 @@ export function JokerTicket({ joker, qrValue, onCreateAvatarJob }: JokerTicketPr
           ))}
         </div>
       ) : null}
-      {qrValue ? <p className="helper">私密入园码：扫码进入小丑乐园，也能查看这只小丑的行为回放。</p> : null}
+      {qrValue ? <p className="helper">私密回放码：扫码先看别人给这只小丑的气球回应，也能继续进入小丑乐园。</p> : null}
       {qrValue ? <QRCodeBox value={qrValue} /> : null}
     </div>
   );

@@ -81,6 +81,8 @@ async def test_full_i_e_replay_flow_uses_session_owned_jokers():
         match = match_resp.json()
         assert match["balloon_id"] == balloon["id"]
         assert match["owner_id"] == i_joker["id"]
+        assert match["balloon_summary"] == balloon["safe_summary"]
+        assert match["owner"]["id"] == i_joker["id"]
 
         action_resp = await e_client.post(
             "/api/heal/actions",
@@ -94,6 +96,32 @@ async def test_full_i_e_replay_flow_uses_session_owned_jokers():
         assert action_resp.status_code == 200, action_resp.text
         action = action_resp.json()
         assert action["healer_id"] == e_joker["id"]
+        assert action["recipient_id"] == i_joker["id"]
+        assert action["energy_delta_healer"] == 1
+        assert action["energy_delta_owner"] == 2
+        assert action["affinity_delta"] == 3
+
+        second_balloon_resp = await i_client.post(
+            "/api/balloons",
+            json={"emo_text": "第二颗气球，想看看会不会有人回来看我。"},
+        )
+        assert second_balloon_resp.status_code == 200, second_balloon_resp.text
+        second_balloon = second_balloon_resp.json()
+
+        second_match_resp = await e_client.post("/api/heal/match", json={"action_type": "dance"})
+        assert second_match_resp.status_code == 200, second_match_resp.text
+        second_match = second_match_resp.json()
+        assert second_match["balloon_id"] == second_balloon["id"]
+
+        second_action_resp = await e_client.post(
+            "/api/heal/actions",
+            json={
+                "balloon_id": second_balloon["id"],
+                "action_type": "dance",
+                "cheer_text": "原地转两圈，坏心情自动退场。",
+            },
+        )
+        assert second_action_resp.status_code == 200, second_action_resp.text
 
         replay_resp = await i_client.get(f"/api/replay/{i_joker['qr_token']}")
         assert replay_resp.status_code == 200, replay_resp.text
@@ -101,6 +129,21 @@ async def test_full_i_e_replay_flow_uses_session_owned_jokers():
         assert replay["joker"]["id"] == i_joker["id"]
         assert replay["actions"]
         assert replay["events"]
+        assert replay["energy_score"] == 4
+        assert replay["joker"]["energy_score"] == 4
+        assert len(replay["received_replies"]) == 2
+        assert replay["received_replies"][0]["responder"]["id"] == e_joker["id"]
+        assert replay["received_replies"][0]["recipient"]["id"] == i_joker["id"]
+        assert replay["relationships"][0]["joker"]["id"] == e_joker["id"]
+        assert replay["relationships"][0]["affinity_score"] == 6
+        assert replay["relationships"][0]["interaction_count"] == 2
+
+        e_replay_resp = await e_client.get(f"/api/replay/{e_joker['qr_token']}")
+        assert e_replay_resp.status_code == 200, e_replay_resp.text
+        e_replay = e_replay_resp.json()
+        assert e_replay["energy_score"] == 2
+        assert len(e_replay["sent_replies"]) == 2
+        assert e_replay["sent_replies"][0]["recipient"]["id"] == i_joker["id"]
 
 
 @pytest.mark.asyncio

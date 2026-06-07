@@ -1,8 +1,8 @@
 "use client";
 
-import type { CSSProperties, FormEvent } from "react";
-import { useEffect, useMemo, useState } from "react";
-import { Activity, CheckCircle, Clock, History, MapPin, Radio, Reply, Send, Sparkles, UserPlus, Users } from "lucide-react";
+import type { CSSProperties, FormEvent, PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Activity, CheckCircle, Clock, History, MapPin, Radio, Reply, RotateCcw, Send, Sparkles, UserPlus, Users, X, ZoomIn, ZoomOut } from "lucide-react";
 import { ClownSprite } from "@/components/pixel/ClownSprite";
 import { useLiveSocialEvents } from "@/hooks/useLiveSocialEvents";
 import { loadActiveJoker, saveActiveJoker } from "@/lib/clownAssets";
@@ -10,12 +10,12 @@ import { apiFetch, type Balloon, type HealAction, type Joker, type MatchResult }
 import {
   eventStatusText,
   eventTypeText,
-  liangjiangCampus,
+  liangjiangMapImage,
   liangjiangPois,
   poiTypeText,
   type DemoClown,
+  type ImagePointTuple,
   type LiangjiangPoi,
-  type LngLatTuple,
   type SocialEvent
 } from "@/lib/socialMapData";
 
@@ -24,11 +24,6 @@ type Selection =
   | { kind: "clown"; id: string }
   | { kind: "poi"; id: string };
 
-type ProjectedPoint = {
-  x: number;
-  y: number;
-};
-
 type PositionStyle = CSSProperties & {
   "--x": string;
   "--y": string;
@@ -36,8 +31,54 @@ type PositionStyle = CSSProperties & {
   "--clown-accent"?: string;
 };
 
+type MapView = {
+  scale: number;
+  x: number;
+  y: number;
+};
+
+type ViewportSize = {
+  width: number;
+  height: number;
+};
+
+type ReplyActionType = "hug" | "pet" | "cheer" | "dance";
+
+type ReplyDraft = {
+  eventId: string;
+  match: MatchResult;
+  actionType: ReplyActionType;
+  cheerText: string;
+};
+
 const statusOrder: SocialEvent["status"][] = ["live", "waiting", "done", "replay"];
 const moodOptions = ["想打招呼", "有点紧张", "求陪走", "分享快乐"];
+const replyActionCards: Array<{ type: ReplyActionType; label: string; description: string; defaultText: string }> = [
+  {
+    type: "cheer",
+    label: "加油",
+    description: "给对方一小段明亮的补给。",
+    defaultText: "接住了，这颗气球有人认真回应。"
+  },
+  {
+    type: "hug",
+    label: "拥抱",
+    description: "适合低电量和需要被接住的瞬间。",
+    defaultText: "抱一下，坏运气先原地掉线。"
+  },
+  {
+    type: "pet",
+    label: "摸头",
+    description: "轻轻安抚，不催促对方立刻变好。",
+    defaultText: "摸摸头，今天先把电量充到 61%。"
+  },
+  {
+    type: "dance",
+    label: "转运舞",
+    description: "用一点荒诞把气氛转起来。",
+    defaultText: "原地转两圈，坏心情自动退场。"
+  }
+];
 
 const statusIcons = {
   live: Radio,
@@ -46,40 +87,35 @@ const statusIcons = {
   replay: History
 };
 
-function getEventPath(event: SocialEvent, clowns: DemoClown[]): LngLatTuple[] {
+const minMapScale = 1;
+const maxMapScale = 3.25;
+const mapZoomStep = 0.28;
+const initialMapView: MapView = { scale: 1, x: 0, y: 0 };
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function getEventPoi(event: SocialEvent): LiangjiangPoi | null {
+  return event.poiId ? liangjiangPois.find((item) => item.id === event.poiId) ?? null : null;
+}
+
+function getEventMapPath(event: SocialEvent, clowns: DemoClown[]): ImagePointTuple[] {
   const from = clowns.find((clown) => clown.id === event.from);
   const to = event.to ? clowns.find((clown) => clown.id === event.to) : null;
-  const poi = event.poiId ? liangjiangPois.find((item) => item.id === event.poiId) : null;
+  const poi = getEventPoi(event);
 
-  if (event.path && event.path.length > 0) return event.path;
-  if (from && to) return [from.position, to.position];
-  if (from && poi) return [from.position, poi.position];
-  if (from) return [from.position];
-  if (poi) return [poi.position];
-  return [liangjiangCampus.center];
+  if (event.mapPath && event.mapPath.length > 0) return event.mapPath;
+  if (from && to) return [from.mapPoint, to.mapPoint];
+  if (from && poi) return [from.mapPoint, poi.mapPoint];
+  if (from) return [from.mapPoint];
+  if (poi) return [poi.mapPoint];
+  return [liangjiangPois[0].mapPoint];
 }
 
-function getEventPosition(event: SocialEvent, clowns: DemoClown[]) {
-  const path = getEventPath(event, clowns);
-  return path[Math.floor(path.length / 2)] ?? path[0] ?? liangjiangCampus.center;
-}
-
-function makeBounds(points: LngLatTuple[]) {
-  const lngs = points.map(([lng]) => lng);
-  const lats = points.map(([, lat]) => lat);
-  const minLng = Math.min(...lngs);
-  const maxLng = Math.max(...lngs);
-  const minLat = Math.min(...lats);
-  const maxLat = Math.max(...lats);
-  const lngPad = Math.max((maxLng - minLng) * 0.12, 0.00016);
-  const latPad = Math.max((maxLat - minLat) * 0.12, 0.00016);
-
-  return {
-    minLng: minLng - lngPad,
-    maxLng: maxLng + lngPad,
-    minLat: minLat - latPad,
-    maxLat: maxLat + latPad
-  };
+function getEventMapPosition(event: SocialEvent, clowns: DemoClown[]) {
+  const path = getEventMapPath(event, clowns);
+  return path[Math.floor(path.length / 2)] ?? path[0] ?? liangjiangPois[0].mapPoint;
 }
 
 function timeLabel(value: string) {
@@ -95,6 +131,14 @@ function isRecent(event: SocialEvent) {
   return Date.now() - timestamp < 90_000;
 }
 
+function normalizeReplyAction(value: string): ReplyActionType {
+  return replyActionCards.some((card) => card.type === value) ? value as ReplyActionType : "cheer";
+}
+
+function defaultReplyText(actionType: ReplyActionType) {
+  return replyActionCards.find((card) => card.type === actionType)?.defaultText ?? replyActionCards[0].defaultText;
+}
+
 export function ParkLive2D() {
   const { clowns, events, activeEvent, joinPark, joinWave, dropBalloon, ensureMatchedBalloon, replyToEvent, focusEvent, addJokerToPark } = useLiveSocialEvents();
   const [selected, setSelected] = useState<Selection>({ kind: "event", id: activeEvent?.id ?? events[0]?.id ?? "" });
@@ -104,6 +148,55 @@ export function ParkLive2D() {
   const [activeJoker, setActiveJoker] = useState<Joker | null>(null);
   const [commandLoading, setCommandLoading] = useState(false);
   const [commandError, setCommandError] = useState<string | null>(null);
+  const [replyDraft, setReplyDraft] = useState<ReplyDraft | null>(null);
+  const mapViewportRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null);
+  const [mapView, setMapView] = useState<MapView>(initialMapView);
+  const [viewportSize, setViewportSize] = useState<ViewportSize>({ width: 0, height: 0 });
+  const baseMapScale = useMemo(() => {
+    if (viewportSize.width <= 0 || viewportSize.height <= 0) return 1;
+    return Math.min(viewportSize.width / liangjiangMapImage.width, viewportSize.height / liangjiangMapImage.height);
+  }, [viewportSize.height, viewportSize.width]);
+  const effectiveMapScale = baseMapScale * mapView.scale;
+
+  const clampMapView = useCallback(
+    (view: MapView): MapView => {
+      const scale = clamp(view.scale, minMapScale, maxMapScale);
+      if (viewportSize.width <= 0 || viewportSize.height <= 0) return { scale, x: 0, y: 0 };
+
+      const scaledWidth = liangjiangMapImage.width * baseMapScale * scale;
+      const scaledHeight = liangjiangMapImage.height * baseMapScale * scale;
+      const buffer = scale > 1 ? 72 : 0;
+      const maxX = Math.max(0, (scaledWidth - viewportSize.width) / 2) + buffer;
+      const maxY = Math.max(0, (scaledHeight - viewportSize.height) / 2) + buffer;
+
+      return {
+        scale,
+        x: clamp(view.x, -maxX, maxX),
+        y: clamp(view.y, -maxY, maxY)
+      };
+    },
+    [baseMapScale, viewportSize.height, viewportSize.width]
+  );
+
+  useEffect(() => {
+    const viewport = mapViewportRef.current;
+    if (!viewport) return;
+
+    const observer = new ResizeObserver(([entry]) => {
+      const { width, height } = entry.contentRect;
+      setViewportSize({ width, height });
+    });
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    setMapView((current) => {
+      const next = clampMapView(current);
+      return next.scale === current.scale && next.x === current.x && next.y === current.y ? current : next;
+    });
+  }, [clampMapView]);
 
   useEffect(() => {
     let cancelled = false;
@@ -133,24 +226,6 @@ export function ParkLive2D() {
     };
   }, [addJokerToPark]);
 
-  const bounds = useMemo(() => {
-    const points = [
-      ...liangjiangPois.map((poi) => poi.position),
-      ...clowns.map((clown) => clown.position),
-      ...events.flatMap((event) => getEventPath(event, clowns))
-    ];
-    return makeBounds(points.length > 0 ? points : [liangjiangCampus.center]);
-  }, [clowns, events]);
-
-  const project = (position: LngLatTuple): ProjectedPoint => {
-    const x = ((position[0] - bounds.minLng) / Math.max(bounds.maxLng - bounds.minLng, 0.000001)) * 100;
-    const y = (1 - (position[1] - bounds.minLat) / Math.max(bounds.maxLat - bounds.minLat, 0.000001)) * 100;
-    return {
-      x: Math.max(3, Math.min(97, x)),
-      y: Math.max(3, Math.min(97, y))
-    };
-  };
-
   const focusedEvent = selected.kind === "event" ? events.find((event) => event.id === selected.id) ?? activeEvent : activeEvent;
   const focusedClown = selected.kind === "clown" ? clowns.find((clown) => clown.id === selected.id) ?? null : null;
   const focusedPoi = selected.kind === "poi" ? liangjiangPois.find((poi) => poi.id === selected.id) ?? null : null;
@@ -163,22 +238,126 @@ export function ParkLive2D() {
   const waitingCount = events.filter((event) => event.status === "waiting").length;
   const recentCount = Math.max(events.filter(isRecent).length, events.slice(-5).filter((event) => event.status === "live").length);
   const relayCount = events.filter((event) => event.to || event.status === "done" || event.status === "replay").length;
+  const focusedEventPoi = focusedEvent ? getEventPoi(focusedEvent) : null;
+  const mapWorldStyle = useMemo(
+    () =>
+      ({
+        width: liangjiangMapImage.width,
+        height: liangjiangMapImage.height,
+        "--map-overlay-scale": `${1 / Math.sqrt(mapView.scale)}`,
+        transform: `translate(-50%, -50%) translate(${mapView.x}px, ${mapView.y}px) scale(${effectiveMapScale})`
+      }) as CSSProperties,
+    [effectiveMapScale, mapView.scale, mapView.x, mapView.y]
+  );
+
+  const centerMapOn = useCallback(
+    (point: ImagePointTuple, nextScale = 1.72) => {
+      if (viewportSize.width <= 0 || viewportSize.height <= 0) return;
+      const scale = clamp(nextScale, minMapScale, maxMapScale);
+      const effectiveScale = baseMapScale * scale;
+      const nextView = {
+        scale,
+        x: -(point[0] - liangjiangMapImage.width / 2) * effectiveScale,
+        y: -(point[1] - liangjiangMapImage.height / 2) * effectiveScale
+      };
+      setMapView(clampMapView(nextView));
+    },
+    [baseMapScale, clampMapView, viewportSize.height, viewportSize.width]
+  );
+
+  const zoomMap = useCallback(
+    (delta: number) => {
+      setMapView((current) =>
+        clampMapView({
+          ...current,
+          scale: current.scale + delta
+        })
+      );
+    },
+    [clampMapView]
+  );
+
+  const resetMap = useCallback(() => {
+    setMapView(initialMapView);
+  }, []);
+
+  const handleMapWheel = useCallback(
+    (event: ReactWheelEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      const rect = event.currentTarget.getBoundingClientRect();
+      const delta = event.deltaY > 0 ? -mapZoomStep : mapZoomStep;
+      setMapView((current) => {
+        const nextScale = clamp(current.scale + delta, minMapScale, maxMapScale);
+        const ratio = nextScale / current.scale;
+        const cursorX = event.clientX - rect.left - rect.width / 2 - current.x;
+        const cursorY = event.clientY - rect.top - rect.height / 2 - current.y;
+
+        return clampMapView({
+          scale: nextScale,
+          x: current.x - cursorX * (ratio - 1),
+          y: current.y - cursorY * (ratio - 1)
+        });
+      });
+    },
+    [clampMapView]
+  );
+
+  const handleMapPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const target = event.target;
+    if (target instanceof HTMLElement && target.closest("button, input, select, textarea, a")) return;
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: mapView.x,
+      originY: mapView.y
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }, [mapView.x, mapView.y]);
+
+  const handleMapPointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const drag = dragRef.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      setMapView(
+        clampMapView({
+          scale: mapView.scale,
+          x: drag.originX + event.clientX - drag.startX,
+          y: drag.originY + event.clientY - drag.startY
+        })
+      );
+    },
+    [clampMapView, mapView.scale]
+  );
+
+  const handleMapPointerEnd = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (dragRef.current?.pointerId !== event.pointerId) return;
+    dragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }, []);
 
   function selectEvent(event: SocialEvent) {
     setSelected({ kind: "event", id: event.id });
     setActiveModule(event.status);
     focusEvent(event.id);
+    centerMapOn(getEventMapPosition(event, clowns));
   }
 
   function handleJoin() {
     const clown = joinPark();
     setSelected({ kind: "clown", id: clown.id });
+    centerMapOn(clown.mapPoint, 1.82);
   }
 
   function handleJoinWave() {
     const joined = joinWave(12);
     const first = joined[0];
-    if (first) setSelected({ kind: "clown", id: first.id });
+    if (first) {
+      setSelected({ kind: "clown", id: first.id });
+      centerMapOn(first.mapPoint, 1.72);
+    }
   }
 
   async function handleDropBalloon(event: FormEvent<HTMLFormElement>) {
@@ -203,6 +382,7 @@ export function ParkLive2D() {
       setBalloonText("");
       setActiveModule("waiting");
       setSelected({ kind: "event", id: created.id });
+      centerMapOn(getEventMapPosition(created, clowns));
     } catch (err) {
       setCommandError(err instanceof Error ? err.message : "投放气球失败");
     } finally {
@@ -210,7 +390,7 @@ export function ParkLive2D() {
     }
   }
 
-  async function handleReply(eventId?: string) {
+  async function openReplyComposer(eventId?: string, preferredAction: ReplyActionType = "cheer") {
     if (!activeJoker) {
       setCommandError("先在灵魂工坊生成你的专属小丑，再接住气球。");
       return;
@@ -220,26 +400,20 @@ export function ParkLive2D() {
     try {
       const match = await apiFetch<MatchResult>("/api/heal/match", {
         method: "POST",
-        body: JSON.stringify({ action_type: "cheer" })
+        body: JSON.stringify({ action_type: preferredAction })
       });
-      const action = await apiFetch<HealAction>("/api/heal/actions", {
-        method: "POST",
-        body: JSON.stringify({
-          balloon_id: match.balloon_id,
-          action_type: match.suggested_action,
-          cheer_text: "接住了，这颗气球有人回应。"
-        })
-      });
-      ensureMatchedBalloon(match);
+      const actionType = normalizeReplyAction(match.suggested_action);
+      const matchedEvent = ensureMatchedBalloon(match);
       const targetEventId = eventId && eventId === match.balloon_id ? eventId : match.balloon_id;
-      replyToEvent({
+      setReplyDraft({
         eventId: targetEventId,
-        responderId: activeJoker.id,
         match,
-        action
+        actionType,
+        cheerText: defaultReplyText(actionType)
       });
-      setActiveModule("done");
+      setActiveModule("waiting");
       setSelected({ kind: "event", id: targetEventId });
+      centerMapOn(getEventMapPosition(matchedEvent, clowns));
     } catch (err) {
       setCommandError(err instanceof Error ? err.message : "接住气球失败");
     } finally {
@@ -247,25 +421,80 @@ export function ParkLive2D() {
     }
   }
 
-  function handleReplyWave() {
-    void handleReply();
+  async function submitReplyComposer() {
+    if (!activeJoker || !replyDraft) return;
+    const cheerText = replyDraft.cheerText.trim();
+    if (!cheerText) {
+      setCommandError("先留一句回应，再把气球送回去。");
+      return;
+    }
+    setCommandLoading(true);
+    setCommandError(null);
+    try {
+      const action = await apiFetch<HealAction>("/api/heal/actions", {
+        method: "POST",
+        body: JSON.stringify({
+          balloon_id: replyDraft.match.balloon_id,
+          action_type: replyDraft.actionType,
+          cheer_text: cheerText
+        })
+      });
+      const matchedEvent = ensureMatchedBalloon(replyDraft.match);
+      replyToEvent({
+        eventId: replyDraft.eventId,
+        responderId: activeJoker.id,
+        match: replyDraft.match,
+        action
+      });
+      const updatedJoker = {
+        ...activeJoker,
+        energy_score: (activeJoker.energy_score ?? 0) + action.energy_delta_healer
+      };
+      setActiveJoker(updatedJoker);
+      saveActiveJoker(updatedJoker);
+      setReplyDraft(null);
+      setActiveModule("done");
+      setSelected({ kind: "event", id: replyDraft.eventId });
+      centerMapOn(getEventMapPosition(matchedEvent, clowns));
+    } catch (err) {
+      setCommandError(err instanceof Error ? err.message : "提交回应失败");
+    } finally {
+      setCommandLoading(false);
+    }
   }
 
-  function styleForPosition(position: LngLatTuple, clown?: DemoClown): PositionStyle {
-    const point = project(position);
+  function handleReplyWave() {
+    void openReplyComposer(waitingEvent?.id);
+  }
+
+  function styleForMapPoint(point: ImagePointTuple, clown?: DemoClown): PositionStyle {
     return {
-      "--x": `${point.x}%`,
-      "--y": `${point.y}%`,
+      "--x": `${point[0]}px`,
+      "--y": `${point[1]}px`,
       "--clown-main": clown?.color,
       "--clown-accent": clown?.accent
     };
   }
 
   function polylinePoints(event: SocialEvent) {
-    return getEventPath(event, clowns)
-      .map(project)
-      .map((point) => `${point.x},${point.y}`)
+    return getEventMapPath(event, clowns)
+      .map((point) => `${point[0]},${point[1]}`)
       .join(" ");
+  }
+
+  function eventMeta(event: SocialEvent) {
+    const poi = getEventPoi(event);
+    return `${timeLabel(event.createdAt)} · ${eventTypeText[event.type]} · ${poi?.label ?? "两江校区"}`;
+  }
+
+  function selectPoi(poi: LiangjiangPoi) {
+    setSelected({ kind: "poi", id: poi.id });
+    centerMapOn(poi.mapPoint, 1.78);
+  }
+
+  function selectClown(clown: DemoClown) {
+    setSelected({ kind: "clown", id: clown.id });
+    centerMapOn(clown.mapPoint, 1.82);
   }
 
   function eventIsFocused(event: SocialEvent) {
@@ -332,83 +561,121 @@ export function ParkLive2D() {
             <p>不是静态地图，也不是 3D 形象秀。核心是让现场小丑投放气球，由其他小丑接力回应，持续产生可回放事件。</p>
           </div>
 
-          <div className="park-map2d" aria-label="两江校区二维 overlay">
-            <div className="park-map2d__skyline" aria-hidden />
-            <svg className="park-map2d__paths" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden>
+          <div
+            ref={mapViewportRef}
+            className="park-map2d"
+            aria-label="两江校区可缩放直播地图"
+            onWheel={handleMapWheel}
+            onPointerDown={handleMapPointerDown}
+            onPointerMove={handleMapPointerMove}
+            onPointerUp={handleMapPointerEnd}
+            onPointerCancel={handleMapPointerEnd}
+          >
+            <div className="park-map2d__world" style={mapWorldStyle}>
+              <img
+                className="park-map2d__image"
+                src={liangjiangMapImage.src}
+                width={liangjiangMapImage.width}
+                height={liangjiangMapImage.height}
+                alt={liangjiangMapImage.alt}
+                draggable={false}
+              />
+
+              <svg
+                className="park-map2d__paths"
+                viewBox={`0 0 ${liangjiangMapImage.width} ${liangjiangMapImage.height}`}
+                preserveAspectRatio="none"
+                aria-hidden
+              >
+                {visibleEvents.map((event) => (
+                  <polyline
+                    key={event.id}
+                    points={polylinePoints(event)}
+                    data-active={eventIsFocused(event)}
+                    data-status={event.status}
+                  />
+                ))}
+              </svg>
+
+              {liangjiangPois.map((poi) => (
+                <button
+                  key={poi.id}
+                  type="button"
+                  className={`park-poi-pin park-poi-pin--${poi.type}`}
+                  data-active={poiIsFocused(poi)}
+                  style={styleForMapPoint(poi.mapPoint)}
+                  onClick={() => selectPoi(poi)}
+                >
+                  <MapPin size={14} aria-hidden />
+                  <span>{poi.label}</span>
+                </button>
+              ))}
+
               {visibleEvents.map((event) => (
-                <polyline
+                <button
                   key={event.id}
-                  points={polylinePoints(event)}
+                  type="button"
+                  className="park-event-bubble2d"
                   data-active={eventIsFocused(event)}
                   data-status={event.status}
-                />
+                  style={styleForMapPoint(getEventMapPosition(event, clowns))}
+                  onClick={() => selectEvent(event)}
+                >
+                  <strong>{event.title}</strong>
+                  <span>{getEventPoi(event)?.label ?? eventTypeText[event.type]}</span>
+                </button>
               ))}
-            </svg>
 
-            {liangjiangPois.map((poi) => (
-              <button
-                key={poi.id}
-                type="button"
-                className={`park-poi-pin park-poi-pin--${poi.type}`}
-                data-active={poiIsFocused(poi)}
-                style={styleForPosition(poi.position)}
-                onClick={() => setSelected({ kind: "poi", id: poi.id })}
-              >
-                <MapPin size={14} aria-hidden />
-                <span>{poi.label}</span>
-              </button>
-            ))}
+              {clowns.map((clown) => (
+                <button
+                  key={clown.id}
+                  type="button"
+                  className="park-clown-token"
+                  data-active={clownIsFocused(clown)}
+                  style={styleForMapPoint(clown.mapPoint, clown)}
+                  onClick={() => selectClown(clown)}
+                >
+                  {clown.spriteUrl ? (
+                    <ClownSprite
+                      spriteUrl={clown.spriteUrl}
+                      previewUrl={clown.image}
+                      frameSize={clown.frameSize}
+                      actions={clown.spriteActions}
+                      action={clownIsFocused(clown) ? "special" : "idle"}
+                      size={52}
+                      label={clown.name}
+                    />
+                  ) : clown.image ? (
+                    <img src={clown.image} alt="" />
+                  ) : (
+                    <span className="park-clown-sprite" aria-hidden>
+                      <i className="park-clown-sprite__hat" />
+                      <i className="park-clown-sprite__head" />
+                      <i className="park-clown-sprite__body" />
+                    </span>
+                  )}
+                  <span className="park-clown-token__name">{clown.name}</span>
+                </button>
+              ))}
+            </div>
 
-            {visibleEvents.map((event) => (
-              <button
-                key={event.id}
-                type="button"
-                className="park-event-bubble2d"
-                data-active={eventIsFocused(event)}
-                data-status={event.status}
-                style={styleForPosition(getEventPosition(event, clowns))}
-                onClick={() => selectEvent(event)}
-              >
-                <strong>{event.title}</strong>
-                <span>{eventTypeText[event.type]}</span>
+            <div className="park-map2d__tools" aria-label="地图缩放控制" onPointerDown={(event) => event.stopPropagation()}>
+              <button type="button" aria-label="放大地图" title="放大地图" onClick={() => zoomMap(mapZoomStep)}>
+                <ZoomIn size={17} aria-hidden />
               </button>
-            ))}
-
-            {clowns.map((clown) => (
-              <button
-                key={clown.id}
-                type="button"
-                className="park-clown-token"
-                data-active={clownIsFocused(clown)}
-                style={styleForPosition(clown.position, clown)}
-                onClick={() => setSelected({ kind: "clown", id: clown.id })}
-              >
-                {clown.spriteUrl ? (
-                  <ClownSprite
-                    spriteUrl={clown.spriteUrl}
-                    previewUrl={clown.image}
-                    frameSize={clown.frameSize}
-                    actions={clown.spriteActions}
-                    action={clownIsFocused(clown) ? "special" : "idle"}
-                    size={52}
-                    label={clown.name}
-                  />
-                ) : clown.image ? (
-                  <img src={clown.image} alt="" />
-                ) : (
-                  <span className="park-clown-sprite" aria-hidden>
-                    <i className="park-clown-sprite__hat" />
-                    <i className="park-clown-sprite__head" />
-                    <i className="park-clown-sprite__body" />
-                  </span>
-                )}
-                <span className="park-clown-token__name">{clown.name}</span>
+              <button type="button" aria-label="缩小地图" title="缩小地图" onClick={() => zoomMap(-mapZoomStep)}>
+                <ZoomOut size={17} aria-hidden />
               </button>
-            ))}
+              <button type="button" aria-label="重置地图视图" title="重置地图视图" onClick={resetMap}>
+                <RotateCcw size={17} aria-hidden />
+              </button>
+            </div>
 
             <div className="park-map2d__focus" aria-live="polite">
+              <small>{focusedEvent ? eventMeta(focusedEvent) : "两江校区"}</small>
               <strong>{focusedEvent?.title ?? "等待第一场互动"}</strong>
               <span>{focusedEvent?.summary ?? "加入游园或投放情绪气球后，这里会同步高亮。"}</span>
+              {focusedEventPoi ? <em>{focusedEventPoi.note}</em> : null}
             </div>
           </div>
         </section>
@@ -457,9 +724,9 @@ export function ParkLive2D() {
               </button>
             </form>
 
-            <button type="button" className="park-reply-button" disabled={!waitingEvent || commandLoading} onClick={() => waitingEvent && void handleReply(waitingEvent.id)}>
+            <button type="button" className="park-reply-button" disabled={commandLoading} onClick={() => void openReplyComposer(waitingEvent?.id)}>
               <Reply size={16} aria-hidden />
-              {waitingEvent ? "接住一个气球" : "暂无等待气球"}
+              {waitingEvent ? "接住一个气球" : "匹配一个气球"}
             </button>
             <button type="button" className="park-reply-button park-reply-button--batch" disabled={waitingCount === 0 || commandLoading} onClick={handleReplyWave}>
               <Sparkles size={16} aria-hidden />
@@ -501,12 +768,12 @@ export function ParkLive2D() {
                 bucketEvents.map((event) => (
                   <div key={event.id} className="park-event-row2d" data-active={eventIsFocused(event)}>
                     <button type="button" className="park-event-row2d__main" onClick={() => selectEvent(event)}>
-                      <span>{timeLabel(event.createdAt)} · {eventTypeText[event.type]}</span>
+                      <span>{eventMeta(event)}</span>
                       <strong>{event.title}</strong>
                       <small>{event.summary}</small>
                     </button>
                     {event.status === "waiting" ? (
-                      <button type="button" className="park-event-row2d__reply" onClick={() => void handleReply(event.id)}>
+                      <button type="button" className="park-event-row2d__reply" disabled={commandLoading} onClick={() => void openReplyComposer(event.id)}>
                         接住
                       </button>
                     ) : null}
@@ -531,7 +798,7 @@ export function ParkLive2D() {
                 waitingEvents.map((event) => (
                   <button key={event.id} type="button" data-active={focusedEvent?.id === event.id} onClick={() => selectEvent(event)}>
                     <strong>{event.title}</strong>
-                    <span>{clownName(event.from)} 发出，等待接力</span>
+                    <span>{clownName(event.from)} 发出，等待在 {getEventPoi(event)?.label ?? "两江校区"} 接力</span>
                   </button>
                 ))
               )}
@@ -553,7 +820,7 @@ export function ParkLive2D() {
                 replayEvents.map((event) => (
                   <button key={event.id} type="button" data-active={focusedEvent?.id === event.id} onClick={() => selectEvent(event)}>
                     <strong>{event.title}</strong>
-                    <span>{clownName(event.from)} → {clownName(event.to)}</span>
+                    <span>{clownName(event.from)} → {clownName(event.to)} · {getEventPoi(event)?.label ?? "两江校区"}</span>
                   </button>
                 ))
               )}
@@ -586,7 +853,7 @@ export function ParkLive2D() {
 
             {!focusedClown && !focusedPoi && focusedEvent ? (
               <div className="park-focus-card">
-                <span>{eventStatusText[focusedEvent.status]} · {eventTypeText[focusedEvent.type]}</span>
+                <span>{eventStatusText[focusedEvent.status]} · {eventMeta(focusedEvent)}</span>
                 <strong>{focusedEvent.title}</strong>
                 <p>{focusedEvent.summary}</p>
               </div>
@@ -603,6 +870,66 @@ export function ParkLive2D() {
           </section>
         </aside>
       </div>
+      {replyDraft ? (
+        <div className="park-reply-modal" role="dialog" aria-modal="true" aria-labelledby="parkReplyTitle">
+          <div className="park-reply-modal__card">
+            <div className="section-title">
+              <div>
+                <span className="pixel-kicker">BALLOON REPLY</span>
+                <h2 id="parkReplyTitle">接住这颗气球</h2>
+              </div>
+              <button className="icon-button" type="button" title="关闭" onClick={() => setReplyDraft(null)}>
+                <X size={17} aria-hidden />
+              </button>
+            </div>
+
+            <div className="park-reply-modal__target">
+              <span>{replyDraft.match.owner.nickname || replyDraft.match.owner.id} 的气球</span>
+              <strong>{replyDraft.match.balloon_summary}</strong>
+              <small>{replyDraft.match.reason}</small>
+            </div>
+
+            <div className="park-reply-actions" role="radiogroup" aria-label="选择回应动作">
+              {replyActionCards.map((card) => (
+                <button
+                  key={card.type}
+                  type="button"
+                  data-active={replyDraft.actionType === card.type}
+                  onClick={() =>
+                    setReplyDraft((current) => {
+                      if (!current) return current;
+                      const previousDefault = defaultReplyText(current.actionType);
+                      const nextText = current.cheerText.trim() && current.cheerText !== previousDefault ? current.cheerText : card.defaultText;
+                      return { ...current, actionType: card.type, cheerText: nextText };
+                    })
+                  }
+                >
+                  <strong>{card.label}</strong>
+                  <span>{card.description}</span>
+                </button>
+              ))}
+            </div>
+
+            <label className="field park-reply-modal__field" htmlFor="parkReplyText">
+              <span>给对方的回复</span>
+              <textarea
+                id="parkReplyText"
+                value={replyDraft.cheerText}
+                maxLength={120}
+                onChange={(event) => setReplyDraft((current) => current ? { ...current, cheerText: event.target.value } : current)}
+              />
+            </label>
+
+            <div className="park-reply-modal__footer">
+              <span>回应者能量 +1 · 对方能量 +2 · 亲密度 +3</span>
+              <button className="primary-button" type="button" disabled={commandLoading || replyDraft.cheerText.trim().length === 0} onClick={() => void submitReplyComposer()}>
+                <Send size={16} aria-hidden />
+                送出回应
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

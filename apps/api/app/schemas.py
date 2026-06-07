@@ -103,6 +103,18 @@ class JokerOut(BaseModel):
     soul_profile: SoulProfile | None = None
     avatar_recipe: AvatarRecipe | None = None
     avatar_status: str | None = "recipe_ready"
+    energy_score: int = 0
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class JokerBriefOut(BaseModel):
+    id: str
+    nickname: str | None
+    mbti: str
+    constellation: str
+    social_energy: str
+    energy_score: int = 0
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -129,6 +141,8 @@ class MatchRequest(BaseModel):
 class MatchOut(BaseModel):
     balloon_id: str
     owner_id: str
+    balloon_summary: str
+    owner: JokerBriefOut
     score: float
     reason: str
     suggested_action: str
@@ -145,11 +159,15 @@ class HealActionCreate(BaseModel):
 class HealActionOut(BaseModel):
     id: str
     healer_id: str
+    recipient_id: str | None
     balloon_id: str
     action_type: str
     cheer_text: str
     match_score: float
     match_reason: str
+    energy_delta_healer: int = 1
+    energy_delta_owner: int = 2
+    affinity_delta: int = 3
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -169,11 +187,39 @@ class ParkEventOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ReplyRecordOut(BaseModel):
+    id: str
+    balloon_id: str
+    balloon_summary: str
+    responder: JokerBriefOut
+    recipient: JokerBriefOut
+    action_type: str
+    cheer_text: str
+    match_score: float
+    match_reason: str
+    energy_delta_healer: int
+    energy_delta_owner: int
+    affinity_delta: int
+    created_at: datetime
+
+
+class RelationshipOut(BaseModel):
+    joker: JokerBriefOut
+    affinity_score: int
+    interaction_count: int
+    last_action_id: str | None
+    updated_at: datetime
+
+
 class ReplayOut(BaseModel):
     joker: JokerOut
     balloons: list[BalloonOut]
     actions: list[HealActionOut]
     events: list[ParkEventOut]
+    received_replies: list[ReplyRecordOut]
+    sent_replies: list[ReplyRecordOut]
+    relationships: list[RelationshipOut]
+    energy_score: int
     headline: str
     share_text: str
 
