@@ -72,6 +72,7 @@ export type Joker = {
   mbti: string;
   constellation: string;
   social_energy: "I" | "E";
+  desired_poi_id: string | null;
   persona: string;
   verdict: string;
   qr_token: string;
@@ -109,6 +110,11 @@ export type MatchResult = {
   reason: string;
   suggested_action: string;
   prompt: string;
+};
+
+export type MatchRequest = {
+  action_type: string;
+  target_owner_id?: string | null;
 };
 
 export type HealAction = {
@@ -175,6 +181,16 @@ export type RelationshipRecord = {
   updated_at: string;
 };
 
+export type ClownVoteSummaryItem = {
+  clown_id: string;
+  votes: number;
+};
+
+export type ClownVoteSummary = {
+  items: ClownVoteSummaryItem[];
+  voted_clown_id: string | null;
+};
+
 function currentSiteOrigin() {
   if (SITE_ORIGIN) return SITE_ORIGIN;
   if (typeof window !== "undefined") return window.location.origin;
@@ -193,7 +209,18 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || `Request failed: ${response.status}`);
+    let message = text;
+    if (text) {
+      try {
+        const parsed = JSON.parse(text) as { detail?: unknown };
+        if (typeof parsed.detail === "string") {
+          message = parsed.detail;
+        }
+      } catch {
+        // Fall back to the raw response text for non-JSON errors.
+      }
+    }
+    throw new Error(message || `Request failed: ${response.status}`);
   }
   return response.json() as Promise<T>;
 }

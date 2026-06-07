@@ -2,17 +2,19 @@ import math
 import secrets
 from datetime import datetime, timezone
 
-from sqlalchemy import desc, or_, select
+from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.ai_adapter import JokerAIAdapter
 from app.config import Settings
-from app.models import AvatarJob, EmoBalloon, HealAction, InteractionEvent, JokerProfile, JokerRelationship, ModerationLog
+from app.models import AvatarJob, ClownVote, EmoBalloon, HealAction, InteractionEvent, JokerProfile, JokerRelationship, ModerationLog
 from app.safety import clamp_joker_line, moderate_text
 from app.schemas import (
     AvatarJobCreate,
     BalloonCreate,
+    ClownVoteSummaryItem,
+    ClownVoteSummaryOut,
     HealActionCreate,
     JokerCreate,
     JokerDraftCreate,
@@ -24,6 +26,7 @@ from app.schemas import (
 HEALER_ENERGY_DELTA = 1
 OWNER_ENERGY_DELTA = 2
 AFFINITY_DELTA = 3
+MAX_VOTEABLE_CLOWNS = 80
 
 
 def _simple_embedding(text: str) -> list[float]:
@@ -38,6 +41,20 @@ def _cosine(left: list[float] | None, right: list[float] | None) -> float:
     if not left or not right:
         return 0.0
     return sum(a * b for a, b in zip(left, right))
+
+
+def _normalized_clown_ids(clown_ids: list[str]) -> list[str]:
+    seen: set[str] = set()
+    normalized: list[str] = []
+    for raw_id in clown_ids:
+        clown_id = raw_id.strip()[:96]
+        if not clown_id or clown_id in seen:
+            continue
+        seen.add(clown_id)
+        normalized.append(clown_id)
+        if len(normalized) >= MAX_VOTEABLE_CLOWNS:
+            break
+    return normalized
 
 
 class JokerService:
@@ -60,6 +77,16 @@ class JokerService:
         if not joker or not joker.owner_session_id:
             raise ValueError("token_not_found")
         return joker
+
+    async def park_jokers(self, limit: int = 36) -> list[JokerProfile]:
+        bounded_limit = max(1, min(limit, 80))
+        result = await self.session.execute(
+            select(JokerProfile)
+            .where(JokerProfile.owner_session_id.is_not(None))
+            .order_by(desc(JokerProfile.updated_at), desc(JokerProfile.created_at))
+            .limit(bounded_limit)
+        )
+        return list(result.scalars().all())
 
     async def create_draft(self, payload: JokerDraftCreate) -> JokerDraftOut:
         moderation = moderate_text(payload.soul_seed)
@@ -120,6 +147,7 @@ class JokerService:
             "mbti": payload.mbti.upper(),
             "constellation": payload.constellation,
             "social_energy": payload.social_energy,
+            "desired_poi_id": payload.desired_poi_id,
             "consent_media": payload.consent_media,
             "persona": generated["persona"],
             "verdict": generated["verdict"],
@@ -207,19 +235,32 @@ class HealService:
             raise ValueError("no_active_joker")
         return joker
 
-    async def find_match(self, owner_session_id: str, action_type: str) -> MatchOut:
+    async def find_match(self, owner_session_id: str, action_type: str, target_owner_id: str | None = None) -> MatchOut:
         healer = await self._current_joker(owner_session_id)
         if not healer:
             raise ValueError("healer_not_found")
-        result = await self.session.execute(
+        target_owner: JokerProfile | None = None
+        if target_owner_id:
+            target_owner = await self.session.get(JokerProfile, target_owner_id)
+            if not target_owner:
+                raise ValueError("target_joker_not_found")
+            if target_owner.id == healer.id:
+                raise ValueError("cannot_heal_own_balloon")
+        query = (
             select(EmoBalloon, JokerProfile)
             .join(JokerProfile, EmoBalloon.owner_id == JokerProfile.id)
             .where(EmoBalloon.status == "pending")
             .where(EmoBalloon.owner_id != healer.id)
-            .order_by(EmoBalloon.created_at)
+        )
+        if target_owner:
+            query = query.where(EmoBalloon.owner_id == target_owner.id)
+        result = await self.session.execute(
+            query.order_by(EmoBalloon.created_at)
         )
         candidates = result.all()
         if not candidates:
+            if target_owner:
+                raise ValueError("no_pending_balloon_for_target")
             raise ValueError("no_pending_balloon")
 
         best: tuple[float, EmoBalloon, JokerProfile, str] | None = None
@@ -340,6 +381,48 @@ class HealService:
         await self.session.commit()
         await self.session.refresh(action)
         return action
+
+
+class ClownVoteService:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def summary(self, owner_session_id: str, clown_ids: list[str]) -> ClownVoteSummaryOut:
+        visible_ids = _normalized_clown_ids(clown_ids)
+        current_vote = await self.session.get(ClownVote, owner_session_id)
+        if not visible_ids:
+            return ClownVoteSummaryOut(items=[], voted_clown_id=current_vote.clown_id if current_vote else None)
+
+        rows = await self.session.execute(
+            select(ClownVote.clown_id, func.count(ClownVote.voter_session_id))
+            .where(ClownVote.clown_id.in_(visible_ids))
+            .group_by(ClownVote.clown_id)
+        )
+        counts = {clown_id: int(count) for clown_id, count in rows.all()}
+        return ClownVoteSummaryOut(
+            items=[
+                ClownVoteSummaryItem(clown_id=clown_id, votes=counts.get(clown_id, 0))
+                for clown_id in visible_ids
+            ],
+            voted_clown_id=current_vote.clown_id if current_vote else None,
+        )
+
+    async def toggle(self, owner_session_id: str, clown_id: str, current_clown_ids: list[str]) -> ClownVoteSummaryOut:
+        normalized_id = clown_id.strip()[:96]
+        if not normalized_id:
+            raise ValueError("clown_id_required")
+
+        current_vote = await self.session.get(ClownVote, owner_session_id)
+        if current_vote and current_vote.clown_id == normalized_id:
+            await self.session.delete(current_vote)
+        elif current_vote:
+            current_vote.clown_id = normalized_id
+        else:
+            self.session.add(ClownVote(voter_session_id=owner_session_id, clown_id=normalized_id))
+
+        await self.session.commit()
+        visible_ids = _normalized_clown_ids([*current_clown_ids, normalized_id])
+        return await self.summary(owner_session_id, visible_ids)
 
 
 class ReplayService:
