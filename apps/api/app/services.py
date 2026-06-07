@@ -117,6 +117,9 @@ class JokerService:
             select(JokerProfile).where(JokerProfile.owner_session_id == owner_session_id)
         )
         joker = result.scalar_one_or_none()
+        if joker:
+            return joker
+
         face_descriptor = payload.face_descriptor.model_dump() if payload.face_descriptor else None
         if payload.soul_profile and payload.avatar_recipe:
             generated = {
@@ -161,16 +164,12 @@ class JokerService:
                 f"{payload.mbti} {payload.constellation} {generated['persona']} {payload.soul_seed or ''}"
             ),
         }
-        if joker:
-            for field, value in values.items():
-                setattr(joker, field, value)
-        else:
-            joker = JokerProfile(
-                owner_session_id=owner_session_id,
-                qr_token=secrets.token_urlsafe(18),
-                **values,
-            )
-            self.session.add(joker)
+        joker = JokerProfile(
+            owner_session_id=owner_session_id,
+            qr_token=secrets.token_urlsafe(18),
+            **values,
+        )
+        self.session.add(joker)
         await self.session.commit()
         await self.session.refresh(joker)
         return joker

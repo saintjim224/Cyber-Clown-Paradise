@@ -229,7 +229,7 @@ async def test_targeted_match_only_returns_selected_jokers_pending_balloon():
 
 
 @pytest.mark.asyncio
-async def test_same_session_updates_one_joker_in_place():
+async def test_same_session_reuses_first_joker_without_updates():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         first_resp = await client.post("/api/jokers", json=joker_payload("初版小丑"))
@@ -245,9 +245,10 @@ async def test_same_session_updates_one_joker_in_place():
 
         assert second["id"] == first["id"]
         assert second["qr_token"] == first["qr_token"]
-        assert second["nickname"] == "新版小丑"
-        assert second["social_energy"] == "E"
-        assert second["desired_poi_id"] == "lj-roman-square"
+        assert second["nickname"] == first["nickname"]
+        assert second["mbti"] == first["mbti"] == "INFP"
+        assert second["social_energy"] == first["social_energy"] == "I"
+        assert second["desired_poi_id"] == first["desired_poi_id"] == "lj-yuxiu-lake"
 
 
 @pytest.mark.asyncio

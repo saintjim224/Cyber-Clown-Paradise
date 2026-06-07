@@ -1,7 +1,7 @@
 "use client";
 
 import type { FormEvent } from "react";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { HomeTopBar } from "@/components/home/HomeTopBar";
 import { IdentityWorkshop } from "@/components/home/IdentityWorkshop";
 import { JokerTicket } from "@/components/home/JokerTicket";
@@ -19,7 +19,7 @@ import {
   type MatchResult,
   type SoulProfile
 } from "@/lib/api";
-import { saveActiveJoker, selectClownAsset, withClownAsset } from "@/lib/clownAssets";
+import { clearActiveJoker, loadActiveJoker, saveActiveJoker, selectClownAsset, withClownAsset } from "@/lib/clownAssets";
 
 type Step = "identity" | "task" | "replay";
 
@@ -53,12 +53,69 @@ export function WorkshopApp() {
   const qrValue = useMemo(() => (joker ? replayUrl(joker.qr_token) : ""), [joker]);
   const faceQuality = faceDescriptor?.capture_quality ?? "fallback";
 
+  const showExistingJoker = useCallback((existingJoker: Joker) => {
+    setJoker(existingJoker);
+    saveActiveJoker(existingJoker);
+    setDraft(null);
+    setDraftSoul(null);
+    setDraftVerdict("");
+    setDesiredPoiId(null);
+    setError(null);
+    setShowDraftModal(false);
+    setShowClownReveal(false);
+    setStep("identity");
+  }, []);
+
+  const restoreSessionJoker = useCallback(async () => {
+    try {
+      return await apiFetch<Joker>("/api/jokers/me");
+    } catch (sessionError) {
+      const storedJoker = loadActiveJoker();
+      if (storedJoker?.qr_token) {
+        try {
+          return await apiFetch<Joker>(`/api/jokers/enter/${encodeURIComponent(storedJoker.qr_token)}`, {
+            method: "POST"
+          });
+        } catch (restoreError) {
+          const message = restoreError instanceof Error ? restoreError.message : "";
+          if (message.includes("token_not_found")) clearActiveJoker();
+          throw restoreError;
+        }
+      }
+      clearActiveJoker();
+      throw sessionError;
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadExistingJoker() {
+      try {
+        const existingJoker = await restoreSessionJoker();
+        if (!cancelled) showExistingJoker(existingJoker);
+      } catch {
+        // New visitors should still be able to use the workshop normally.
+      }
+    }
+
+    void loadExistingJoker();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [restoreSessionJoker, showExistingJoker]);
+
   function updateSoul<K extends keyof SoulProfile>(field: K, value: SoulProfile[K]) {
     setDraftSoul((current) => (current ? { ...current, [field]: value } : current));
   }
 
   async function generateDraft(event?: FormEvent) {
     event?.preventDefault();
+    if (joker) {
+      showExistingJoker(joker);
+      return;
+    }
     if (!soulSeed.trim()) {
       setError("先给小丑一点灵魂材料。");
       return;
@@ -92,6 +149,10 @@ export function WorkshopApp() {
   }
 
   async function generateClown() {
+    if (joker) {
+      showExistingJoker(joker);
+      return;
+    }
     if (!draft || !draftSoul) return;
     if (!desiredPoiId) {
       setError("先选择小丑入园后想出现的位置。");
@@ -228,7 +289,7 @@ export function WorkshopApp() {
 
       <div className="workshop-layout">
         <section className="flow-panel" aria-label="体验流程">
-          {step === "identity" ? (
+          {step === "identity" && !joker ? (
             <IdentityWorkshop
               nickname={nickname}
               mbti={mbti}

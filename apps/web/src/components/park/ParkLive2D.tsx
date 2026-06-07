@@ -1,21 +1,18 @@
 "use client";
 
-import type { CSSProperties, FormEvent, PointerEvent as ReactPointerEvent } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Activity, CheckCircle, Clock, Heart, History, MapPin, Radio, Reply, RotateCcw, Send, Sparkles, Trophy, X, ZoomIn, ZoomOut } from "lucide-react";
+import type { CSSProperties, FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Activity, CheckCircle, Clock, Heart, History, MapPin, Radio, Reply, Send, Sparkles, Trophy, X } from "lucide-react";
 import { ClownSprite } from "@/components/pixel/ClownSprite";
+import { LiangjiangRealtimeMap } from "@/components/park/LiangjiangRealtimeMap";
 import { useLiveSocialEvents } from "@/hooks/useLiveSocialEvents";
 import { clearActiveJoker, loadActiveJoker, saveActiveJoker } from "@/lib/clownAssets";
 import { apiFetch, type Balloon, type ClownVoteSummary, type HealAction, type Joker, type MatchRequest, type MatchResult } from "@/lib/api";
 import {
   eventStatusText,
   eventTypeText,
-  liangjiangMapImage,
   liangjiangPois,
   poiTypeText,
-  type DemoClown,
-  type ImagePointTuple,
-  type LiangjiangPoi,
   type SocialEvent
 } from "@/lib/socialMapData";
 
@@ -23,51 +20,6 @@ type Selection =
   | { kind: "event"; id: string }
   | { kind: "clown"; id: string }
   | { kind: "poi"; id: string };
-
-type PositionStyle = CSSProperties & {
-  "--x": string;
-  "--y": string;
-  "--clown-main"?: string;
-  "--clown-accent"?: string;
-};
-
-type MapView = {
-  scale: number;
-  x: number;
-  y: number;
-};
-
-type ViewportSize = {
-  width: number;
-  height: number;
-};
-
-type GesturePointer = {
-  id: number;
-  x: number;
-  y: number;
-};
-
-type DragGesture = {
-  type: "drag";
-  pointerId: number;
-  startX: number;
-  startY: number;
-  originX: number;
-  originY: number;
-};
-
-type PinchGesture = {
-  type: "pinch";
-  startDistance: number;
-  startCenterX: number;
-  startCenterY: number;
-  origin: MapView;
-};
-
-type MapGesture = DragGesture | PinchGesture;
-
-type MapViewUpdater = MapView | ((current: MapView) => MapView);
 
 type ReplyActionType = "hug" | "pet" | "cheer" | "dance";
 
@@ -121,46 +73,8 @@ const statusIcons = {
   replay: History
 };
 
-const minMapScale = 1;
-const maxMapScale = 3.25;
-const mapZoomStep = 0.28;
-const initialMapView: MapView = { scale: 1, x: 0, y: 0 };
-
-function clamp(value: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, value));
-}
-
-function pointerDistance(first: GesturePointer, second: GesturePointer) {
-  return Math.hypot(second.x - first.x, second.y - first.y);
-}
-
-function pointerCenter(first: GesturePointer, second: GesturePointer) {
-  return {
-    x: (first.x + second.x) / 2,
-    y: (first.y + second.y) / 2
-  };
-}
-
-function getEventPoi(event: SocialEvent): LiangjiangPoi | null {
+function getEventPoi(event: SocialEvent) {
   return event.poiId ? liangjiangPois.find((item) => item.id === event.poiId) ?? null : null;
-}
-
-function getEventMapPath(event: SocialEvent, clowns: DemoClown[]): ImagePointTuple[] {
-  const from = clowns.find((clown) => clown.id === event.from);
-  const to = event.to ? clowns.find((clown) => clown.id === event.to) : null;
-  const poi = getEventPoi(event);
-
-  if (event.mapPath && event.mapPath.length > 0) return event.mapPath;
-  if (from && to) return [from.mapPoint, to.mapPoint];
-  if (from && poi) return [from.mapPoint, poi.mapPoint];
-  if (from) return [from.mapPoint];
-  if (poi) return [poi.mapPoint];
-  return [liangjiangPois[0].mapPoint];
-}
-
-function getEventMapPosition(event: SocialEvent, clowns: DemoClown[]) {
-  const path = getEventMapPath(event, clowns);
-  return path[Math.floor(path.length / 2)] ?? path[0] ?? liangjiangPois[0].mapPoint;
 }
 
 function timeLabel(value: string) {
@@ -214,113 +128,6 @@ export function ParkLive2D() {
   const [voteSummary, setVoteSummary] = useState<ClownVoteSummary>({ items: [], voted_clown_id: null });
   const [voteSubmittingId, setVoteSubmittingId] = useState<string | null>(null);
   const [replyDraft, setReplyDraft] = useState<ReplyDraft | null>(null);
-  const mapViewportRef = useRef<HTMLDivElement | null>(null);
-  const mapViewRef = useRef<MapView>(initialMapView);
-  const activePointersRef = useRef<Map<number, GesturePointer>>(new Map());
-  const gestureRef = useRef<MapGesture | null>(null);
-  const [mapView, setMapView] = useState<MapView>(initialMapView);
-  const [viewportSize, setViewportSize] = useState<ViewportSize>({ width: 0, height: 0 });
-  const baseMapScale = useMemo(() => {
-    if (viewportSize.width <= 0 || viewportSize.height <= 0) return 1;
-    return Math.max(viewportSize.width / liangjiangMapImage.width, viewportSize.height / liangjiangMapImage.height);
-  }, [viewportSize.height, viewportSize.width]);
-  const effectiveMapScale = baseMapScale * mapView.scale;
-
-  const clampMapView = useCallback(
-    (view: MapView): MapView => {
-      const scale = clamp(view.scale, minMapScale, maxMapScale);
-      if (viewportSize.width <= 0 || viewportSize.height <= 0) return { scale, x: 0, y: 0 };
-
-      const scaledWidth = liangjiangMapImage.width * baseMapScale * scale;
-      const scaledHeight = liangjiangMapImage.height * baseMapScale * scale;
-      const maxX = Math.max(0, (scaledWidth - viewportSize.width) / 2);
-      const maxY = Math.max(0, (scaledHeight - viewportSize.height) / 2);
-
-      return {
-        scale,
-        x: clamp(view.x, -maxX, maxX),
-        y: clamp(view.y, -maxY, maxY)
-      };
-    },
-    [baseMapScale, viewportSize.height, viewportSize.width]
-  );
-
-  const updateMapView = useCallback(
-    (next: MapViewUpdater) => {
-      setMapView((current) => {
-        const resolved = typeof next === "function" ? next(current) : next;
-        const clamped = clampMapView(resolved);
-        mapViewRef.current = clamped;
-        return clamped;
-      });
-    },
-    [clampMapView]
-  );
-
-  const zoomAroundPoint = useCallback((current: MapView, nextScale: number, clientX: number, clientY: number, rect: DOMRect): MapView => {
-    const scale = clamp(nextScale, minMapScale, maxMapScale);
-    const ratio = scale / current.scale;
-    const cursorX = clientX - rect.left - rect.width / 2 - current.x;
-    const cursorY = clientY - rect.top - rect.height / 2 - current.y;
-
-    return {
-      scale,
-      x: current.x - cursorX * (ratio - 1),
-      y: current.y - cursorY * (ratio - 1)
-    };
-  }, []);
-
-  const startDragGesture = useCallback((pointer: GesturePointer) => {
-    const current = mapViewRef.current;
-    gestureRef.current = {
-      type: "drag",
-      pointerId: pointer.id,
-      startX: pointer.x,
-      startY: pointer.y,
-      originX: current.x,
-      originY: current.y
-    };
-  }, []);
-
-  const startPinchGesture = useCallback((pointers: GesturePointer[], rect: DOMRect) => {
-    const [first, second] = pointers;
-    if (!first || !second) return;
-    const distance = pointerDistance(first, second);
-    if (distance <= 0) return;
-    const center = pointerCenter(first, second);
-
-    gestureRef.current = {
-      type: "pinch",
-      startDistance: distance,
-      startCenterX: center.x - rect.left - rect.width / 2,
-      startCenterY: center.y - rect.top - rect.height / 2,
-      origin: mapViewRef.current
-    };
-  }, []);
-
-  useEffect(() => {
-    const viewport = mapViewportRef.current;
-    if (!viewport) return;
-
-    const observer = new ResizeObserver(([entry]) => {
-      const { width, height } = entry.contentRect;
-      setViewportSize({ width, height });
-    });
-    observer.observe(viewport);
-    return () => observer.disconnect();
-  }, []);
-
-  useEffect(() => {
-    setMapView((current) => {
-      const next = clampMapView(current);
-      mapViewRef.current = next;
-      return next.scale === current.scale && next.x === current.x && next.y === current.y ? current : next;
-    });
-  }, [clampMapView]);
-
-  useEffect(() => {
-    mapViewRef.current = mapView;
-  }, [mapView]);
 
   const activateSessionJoker = useCallback(
     (joker: Joker) => {
@@ -414,7 +221,6 @@ export function ParkLive2D() {
   const focusedClownIsSelf = Boolean(activeJoker && focusedClown?.id === activeJoker.id);
   const canReplyToFocusedClown = Boolean(activeJoker && focusedClown && !focusedClownIsDemo && !focusedClownIsSelf);
   const waitingEvent = events.find((event) => event.status === "waiting");
-  const visibleEvents = events.slice(-14);
   const bucketEvents = events.filter((event) => event.status === activeModule).slice(-6).reverse();
   const waitingEvents = events.filter((event) => event.status === "waiting").slice(-5).reverse();
   const replayEvents = events.filter((event) => event.status === "replay").slice(-4).reverse();
@@ -422,7 +228,6 @@ export function ParkLive2D() {
   const waitingCount = events.filter((event) => event.status === "waiting").length;
   const recentCount = Math.max(events.filter(isRecent).length, events.slice(-5).filter((event) => event.status === "live").length);
   const relayCount = events.filter((event) => event.to || event.status === "done" || event.status === "replay").length;
-  const focusedEventPoi = focusedEvent ? getEventPoi(focusedEvent) : null;
   const voteableClowns = useMemo(
     () => clowns.filter((clown) => !clown.id.startsWith("demo-clown-")),
     [clowns]
@@ -442,16 +247,6 @@ export function ParkLive2D() {
         }))
         .sort((left, right) => right.votes - left.votes || left.initialIndex - right.initialIndex),
     [voteCountById, voteableClowns]
-  );
-  const mapWorldStyle = useMemo(
-    () =>
-      ({
-        width: liangjiangMapImage.width,
-        height: liangjiangMapImage.height,
-        "--map-overlay-scale": `${1 / Math.sqrt(mapView.scale)}`,
-        transform: `translate(-50%, -50%) translate(${mapView.x}px, ${mapView.y}px) scale(${effectiveMapScale})`
-      }) as CSSProperties,
-    [effectiveMapScale, mapView.scale, mapView.x, mapView.y]
   );
 
   const refreshVoteSummary = useCallback(async () => {
@@ -492,134 +287,6 @@ export function ParkLive2D() {
       window.clearInterval(timer);
     };
   }, [voteableClownIds]);
-
-  const centerMapOn = useCallback(
-    (point: ImagePointTuple, nextScale = 1.72) => {
-      if (viewportSize.width <= 0 || viewportSize.height <= 0) return;
-      const scale = clamp(nextScale, minMapScale, maxMapScale);
-      const effectiveScale = baseMapScale * scale;
-      const nextView = {
-        scale,
-        x: -(point[0] - liangjiangMapImage.width / 2) * effectiveScale,
-        y: -(point[1] - liangjiangMapImage.height / 2) * effectiveScale
-      };
-      updateMapView(nextView);
-    },
-    [baseMapScale, updateMapView, viewportSize.height, viewportSize.width]
-  );
-
-  const zoomMap = useCallback(
-    (delta: number) => {
-      const viewport = mapViewportRef.current;
-      if (!viewport) {
-        updateMapView((current) => ({ ...current, scale: current.scale + delta }));
-        return;
-      }
-      const rect = viewport.getBoundingClientRect();
-      updateMapView((current) => zoomAroundPoint(current, current.scale + delta, rect.left + rect.width / 2, rect.top + rect.height / 2, rect));
-    },
-    [updateMapView, zoomAroundPoint]
-  );
-
-  const resetMap = useCallback(() => {
-    updateMapView(initialMapView);
-  }, [updateMapView]);
-
-  const handleMapWheel = useCallback(
-    (event: WheelEvent) => {
-      event.preventDefault();
-      const viewport = mapViewportRef.current;
-      if (!viewport) return;
-      const rect = viewport.getBoundingClientRect();
-      const delta = event.deltaY > 0 ? -mapZoomStep : mapZoomStep;
-      updateMapView((current) => zoomAroundPoint(current, current.scale + delta, event.clientX, event.clientY, rect));
-    },
-    [updateMapView, zoomAroundPoint]
-  );
-
-  useEffect(() => {
-    const viewport = mapViewportRef.current;
-    if (!viewport) return;
-    viewport.addEventListener("wheel", handleMapWheel, { passive: false });
-    return () => viewport.removeEventListener("wheel", handleMapWheel);
-  }, [handleMapWheel]);
-
-  const handleMapPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    const target = event.target;
-    if (target instanceof HTMLElement && target.closest("button, input, select, textarea, a")) return;
-
-    event.preventDefault();
-    const pointer = { id: event.pointerId, x: event.clientX, y: event.clientY };
-    activePointersRef.current.set(event.pointerId, pointer);
-    event.currentTarget.setPointerCapture(event.pointerId);
-
-    const pointers = Array.from(activePointersRef.current.values());
-    if (pointers.length >= 2) {
-      startPinchGesture(pointers, event.currentTarget.getBoundingClientRect());
-    } else {
-      startDragGesture(pointer);
-    }
-  }, [startDragGesture, startPinchGesture]);
-
-  const handleMapPointerMove = useCallback(
-    (event: ReactPointerEvent<HTMLDivElement>) => {
-      if (!activePointersRef.current.has(event.pointerId)) return;
-      event.preventDefault();
-      activePointersRef.current.set(event.pointerId, { id: event.pointerId, x: event.clientX, y: event.clientY });
-
-      const pointers = Array.from(activePointersRef.current.values());
-      const gesture = gestureRef.current;
-
-      if (pointers.length >= 2) {
-        const rect = event.currentTarget.getBoundingClientRect();
-        if (!gesture || gesture.type !== "pinch") {
-          startPinchGesture(pointers, rect);
-          return;
-        }
-
-        const [first, second] = pointers;
-        if (!first || !second || gesture.startDistance <= 0) return;
-        const distance = pointerDistance(first, second);
-        const center = pointerCenter(first, second);
-        const nextScale = gesture.origin.scale * (distance / gesture.startDistance);
-        const scale = clamp(nextScale, minMapScale, maxMapScale);
-        const ratio = scale / gesture.origin.scale;
-        const centerX = center.x - rect.left - rect.width / 2;
-        const centerY = center.y - rect.top - rect.height / 2;
-
-        updateMapView({
-          scale,
-          x: centerX - (gesture.startCenterX - gesture.origin.x) * ratio,
-          y: centerY - (gesture.startCenterY - gesture.origin.y) * ratio
-        });
-        return;
-      }
-
-      if (!gesture || gesture.type !== "drag" || gesture.pointerId !== event.pointerId) return;
-      updateMapView((current) => ({
-        scale: current.scale,
-        x: gesture.originX + event.clientX - gesture.startX,
-        y: gesture.originY + event.clientY - gesture.startY
-      }));
-    },
-    [startPinchGesture, updateMapView]
-  );
-
-  const handleMapPointerEnd = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!activePointersRef.current.has(event.pointerId)) return;
-    activePointersRef.current.delete(event.pointerId);
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-    const pointers = Array.from(activePointersRef.current.values());
-    if (pointers.length >= 2) {
-      startPinchGesture(pointers, event.currentTarget.getBoundingClientRect());
-    } else if (pointers.length === 1 && pointers[0]) {
-      startDragGesture(pointers[0]);
-    } else {
-      gestureRef.current = null;
-    }
-  }, [startDragGesture, startPinchGesture]);
 
   async function toggleFavoriteVote(clownId: string) {
     if (voteSubmittingId || voteableClownIds.length === 0) return;
@@ -665,7 +332,6 @@ export function ParkLive2D() {
     setSelected({ kind: "event", id: event.id });
     setActiveModule(event.status);
     focusEvent(event.id);
-    centerMapOn(getEventMapPosition(event, clowns));
   }
 
   async function handleLocateMyJoker() {
@@ -675,7 +341,6 @@ export function ParkLive2D() {
     try {
       const { clown } = await ensureSessionJoker();
       setSelected({ kind: "clown", id: clown.id });
-      centerMapOn(clown.mapPoint, 1.82);
     } catch (err) {
       setCommandError(commandErrorMessage(err, sessionJokerPrompt));
     } finally {
@@ -703,7 +368,6 @@ export function ParkLive2D() {
       setBalloonText("");
       setActiveModule("waiting");
       setSelected({ kind: "event", id: created.id });
-      centerMapOn(getEventMapPosition(created, clowns));
     } catch (err) {
       setCommandError(commandErrorMessage(err, "投放气球失败"));
     } finally {
@@ -734,7 +398,7 @@ export function ParkLive2D() {
         body: JSON.stringify(matchRequest)
       });
       const actionType = normalizeReplyAction(match.suggested_action);
-      const matchedEvent = ensureMatchedBalloon(match);
+      ensureMatchedBalloon(match);
       const targetEventId = eventId && eventId === match.balloon_id ? eventId : match.balloon_id;
       setReplyDraft({
         eventId: targetEventId,
@@ -744,7 +408,6 @@ export function ParkLive2D() {
       });
       setActiveModule("waiting");
       setSelected({ kind: "event", id: targetEventId });
-      centerMapOn(getEventMapPosition(matchedEvent, clowns));
     } catch (err) {
       setCommandError(commandErrorMessage(err, "接住气球失败", targetClownName));
     } finally {
@@ -771,7 +434,7 @@ export function ParkLive2D() {
           cheer_text: cheerText
         })
       });
-      const matchedEvent = ensureMatchedBalloon(replyDraft.match);
+      ensureMatchedBalloon(replyDraft.match);
       replyToEvent({
         eventId: replyDraft.eventId,
         responderId: joker.id,
@@ -787,7 +450,6 @@ export function ParkLive2D() {
       setReplyDraft(null);
       setActiveModule("done");
       setSelected({ kind: "event", id: replyDraft.eventId });
-      centerMapOn(getEventMapPosition(matchedEvent, clowns));
     } catch (err) {
       setCommandError(commandErrorMessage(err, "提交回应失败"));
     } finally {
@@ -807,50 +469,13 @@ export function ParkLive2D() {
     );
   }
 
-  function styleForMapPoint(point: ImagePointTuple, clown?: DemoClown): PositionStyle {
-    return {
-      "--x": `${point[0]}px`,
-      "--y": `${point[1]}px`,
-      "--clown-main": clown?.color,
-      "--clown-accent": clown?.accent
-    };
-  }
-
-  function polylinePoints(event: SocialEvent) {
-    return getEventMapPath(event, clowns)
-      .map((point) => `${point[0]},${point[1]}`)
-      .join(" ");
-  }
-
   function eventMeta(event: SocialEvent) {
     const poi = getEventPoi(event);
     return `${timeLabel(event.createdAt)} · ${eventTypeText[event.type]} · ${poi?.label ?? "两江校区"}`;
   }
 
-  function selectPoi(poi: LiangjiangPoi) {
-    setSelected({ kind: "poi", id: poi.id });
-    centerMapOn(poi.mapPoint, 1.78);
-  }
-
-  function selectClown(clown: DemoClown) {
-    setSelected({ kind: "clown", id: clown.id });
-    centerMapOn(clown.mapPoint, 1.82);
-  }
-
   function eventIsFocused(event: SocialEvent) {
     return focusedEvent?.id === event.id || selected.kind === "event" && selected.id === event.id;
-  }
-
-  function clownIsFocused(clown: DemoClown) {
-    if (selected.kind === "clown") return selected.id === clown.id;
-    return (
-      focusedEvent?.from === clown.id ||
-      focusedEvent?.to === clown.id
-    );
-  }
-
-  function poiIsFocused(poi: LiangjiangPoi) {
-    return selected.kind === "poi" && selected.id === poi.id || focusedEvent?.poiId === poi.id;
   }
 
   function clownName(id: string | undefined) {
@@ -967,140 +592,7 @@ export function ParkLive2D() {
             </div>
           </section>
 
-          <div
-            ref={mapViewportRef}
-            className="park-map2d"
-            aria-label="两江校区可缩放直播地图"
-            onPointerDown={handleMapPointerDown}
-            onPointerMove={handleMapPointerMove}
-            onPointerUp={handleMapPointerEnd}
-            onPointerCancel={handleMapPointerEnd}
-          >
-            <div className="park-map2d__world" style={mapWorldStyle}>
-              <img
-                className="park-map2d__image"
-                src={liangjiangMapImage.src}
-                width={liangjiangMapImage.width}
-                height={liangjiangMapImage.height}
-                alt={liangjiangMapImage.alt}
-                draggable={false}
-              />
-
-              <svg
-                className="park-map2d__paths"
-                viewBox={`0 0 ${liangjiangMapImage.width} ${liangjiangMapImage.height}`}
-                preserveAspectRatio="none"
-                aria-hidden
-              >
-                {visibleEvents.map((event) => (
-                  <polyline
-                    key={event.id}
-                    points={polylinePoints(event)}
-                    data-active={eventIsFocused(event)}
-                    data-status={event.status}
-                  />
-                ))}
-              </svg>
-
-              {liangjiangPois.map((poi) => (
-                <button
-                  key={poi.id}
-                  type="button"
-                  className={`park-poi-pin park-poi-pin--${poi.type}`}
-                  data-active={poiIsFocused(poi)}
-                  style={styleForMapPoint(poi.mapPoint)}
-                  onClick={() => selectPoi(poi)}
-                >
-                  <MapPin size={14} aria-hidden />
-                  <span>{poi.label}</span>
-                </button>
-              ))}
-
-              {visibleEvents.map((event) => (
-                <button
-                  key={event.id}
-                  type="button"
-                  className="park-event-bubble2d"
-                  data-active={eventIsFocused(event)}
-                  data-status={event.status}
-                  style={styleForMapPoint(getEventMapPosition(event, clowns))}
-                  onClick={() => selectEvent(event)}
-                >
-                  <strong>{event.title}</strong>
-                  <span>{getEventPoi(event)?.label ?? eventTypeText[event.type]}</span>
-                </button>
-              ))}
-
-              {clowns.map((clown) => (
-                <button
-                  key={clown.id}
-                  type="button"
-                  className="park-clown-token"
-                  data-active={clownIsFocused(clown)}
-                  style={styleForMapPoint(clown.mapPoint, clown)}
-                  onClick={() => selectClown(clown)}
-                >
-                  {clown.spriteUrl ? (
-                    <ClownSprite
-                      spriteUrl={clown.spriteUrl}
-                      previewUrl={clown.image}
-                      frameSize={clown.frameSize}
-                      actions={clown.spriteActions}
-                      action={clownIsFocused(clown) ? "special" : "idle"}
-                      size={52}
-                      label={clown.name}
-                      className={clown.id.startsWith("demo-clown-") ? "clown-sprite--smooth" : ""}
-                    />
-                  ) : clown.image ? (
-                    <img src={clown.image} alt="" />
-                  ) : (
-                    <span className="park-clown-sprite" aria-hidden>
-                      <i className="park-clown-sprite__hat" />
-                      <i className="park-clown-sprite__head" />
-                      <i className="park-clown-sprite__body" />
-                    </span>
-                  )}
-                  <span className="park-clown-token__name">{clown.name}</span>
-                </button>
-              ))}
-            </div>
-
-            <div className="park-map2d__tools" aria-label="地图缩放控制" onPointerDown={(event) => event.stopPropagation()}>
-              <button type="button" aria-label="放大地图" title="放大地图" onClick={() => zoomMap(mapZoomStep)}>
-                <ZoomIn size={17} aria-hidden />
-              </button>
-              <button type="button" aria-label="缩小地图" title="缩小地图" onClick={() => zoomMap(-mapZoomStep)}>
-                <ZoomOut size={17} aria-hidden />
-              </button>
-              <button type="button" aria-label="重置地图视图" title="重置地图视图" onClick={resetMap}>
-                <RotateCcw size={17} aria-hidden />
-              </button>
-            </div>
-
-            <div className="park-map2d__focus" aria-live="polite">
-              {focusedClown ? (
-                <>
-                  <small>{focusedClown.energy} · {focusedClown.role}</small>
-                  <strong>{focusedClown.name}</strong>
-                  <span>{focusedClown.line}</span>
-                  <em>{focusedClown.action}</em>
-                </>
-              ) : focusedPoi ? (
-                <>
-                  <small>两江校区</small>
-                  <strong>{focusedPoi.label}</strong>
-                  <span>{focusedPoi.note}</span>
-                </>
-              ) : (
-                <>
-                  <small>{focusedEvent ? eventMeta(focusedEvent) : "两江校区"}</small>
-                  <strong>{focusedEvent?.title ?? "等待第一场互动"}</strong>
-                  <span>{focusedEvent?.summary ?? "加入游园或投放情绪气球后，这里会同步高亮。"}</span>
-                  {focusedEventPoi ? <em>{focusedEventPoi.note}</em> : null}
-                </>
-              )}
-            </div>
-          </div>
+          <LiangjiangRealtimeMap joker={activeJoker} events={events} clowns={clowns} />
         </section>
 
         <aside className="park-live2d__side" aria-label="游园互动控制台">
