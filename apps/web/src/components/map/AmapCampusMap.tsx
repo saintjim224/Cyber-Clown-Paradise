@@ -5,7 +5,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   demoClowns,
   demoEvents,
-  eventStatusText,
   eventTypeText,
   liangjiangCampus,
   liangjiangPois,
@@ -82,6 +81,12 @@ type ActiveModule = "clowns" | "events" | "places";
 
 const key = process.env.NEXT_PUBLIC_AMAP_JSAPI_KEY ?? "";
 const securityJsCode = process.env.NEXT_PUBLIC_AMAP_SECURITY_JS_CODE ?? "";
+const eventTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+  timeZone: "Asia/Shanghai"
+});
 
 function escapeHtml(value: string) {
   return value
@@ -123,10 +128,14 @@ function addControlSafely(map: AMapMap, makeControl: () => unknown) {
   }
 }
 
+function eventPoi(event: SocialEvent) {
+  return event.poiId ? liangjiangPois.find((item) => item.id === event.poiId) ?? null : null;
+}
+
 function eventPath(event: SocialEvent): LngLatTuple[] {
   const from = demoClowns.find((clown) => clown.id === event.from);
   const to = event.to ? demoClowns.find((clown) => clown.id === event.to) : null;
-  const poi = event.poiId ? liangjiangPois.find((item) => item.id === event.poiId) : null;
+  const poi = eventPoi(event);
 
   if (event.path && event.path.length > 0) return event.path;
   if (from && to) return [from.position, to.position];
@@ -136,11 +145,38 @@ function eventPath(event: SocialEvent): LngLatTuple[] {
   return [liangjiangCampus.center];
 }
 
-function eventMarkerPosition(event: SocialEvent): LngLatTuple {
+function eventOccurrencePosition(event: SocialEvent): LngLatTuple {
+  const poi = eventPoi(event);
+  if (poi) return poi.position;
+
   const path = eventPath(event);
   if (path.length === 1) return path[0];
   const midpoint = path[Math.floor(path.length / 2)];
   return midpoint ?? path[0];
+}
+
+function formatEventTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "--:--";
+  return eventTimeFormatter.format(date);
+}
+
+function eventPlaceLabel(event: SocialEvent) {
+  return eventPoi(event)?.label ?? liangjiangCampus.shortName;
+}
+
+function eventMetaText(event: SocialEvent) {
+  return `${formatEventTime(event.createdAt)} · ${eventTypeText[event.type]} · ${eventPlaceLabel(event)}`;
+}
+
+function eventSelectedItem(event: SocialEvent): SelectedItem {
+  return {
+    kind: "event",
+    id: event.id,
+    title: event.title,
+    badge: eventMetaText(event),
+    note: event.summary
+  };
 }
 
 export function AmapCampusMap() {
@@ -212,7 +248,7 @@ export function AmapCampusMap() {
             note: poi.note
           });
         },
-        [-12, -34]
+        [0, -11]
       );
     });
 
@@ -253,24 +289,19 @@ export function AmapCampusMap() {
         );
       }
 
-      const bubbleLngLat = eventMarkerPosition(event);
+      const bubbleLngLat = eventOccurrencePosition(event);
       const bubblePosition = new AMap.LngLat(bubbleLngLat[0], bubbleLngLat[1]);
+      const eventMeta = eventMetaText(event);
       addMarker(
         event.id,
         eventBubbleContent(event),
         bubblePosition,
-        `<strong>${escapeHtml(event.title)}</strong><p>${escapeHtml(event.summary)}</p>`,
+        `<strong>${escapeHtml(event.title)}</strong><p>${escapeHtml(eventMeta)}</p><p>${escapeHtml(event.summary)}</p>`,
         () => {
           setActiveModule("events");
-          setSelected({
-            kind: "event",
-            id: event.id,
-            title: event.title,
-            badge: `${eventStatusText[event.status]} · ${eventTypeText[event.type]}`,
-            note: event.summary
-          });
+          setSelected(eventSelectedItem(event));
         },
-        [-52, -64]
+        [0, -9]
       );
     });
 
@@ -450,17 +481,10 @@ export function AmapCampusMap() {
                     key={event.id}
                     type="button"
                     data-active={selected.id === event.id}
-                    onClick={() =>
-                      focusMarker({
-                        kind: "event",
-                        id: event.id,
-                        title: event.title,
-                        badge: `${eventStatusText[event.status]} · ${eventTypeText[event.type]}`,
-                        note: event.summary
-                      })
-                    }
+                    onClick={() => focusMarker(eventSelectedItem(event))}
                   >
                     <strong>{event.title}</strong>
+                    <span>{eventMetaText(event)}</span>
                     <span>{event.summary}</span>
                   </button>
                 ))}

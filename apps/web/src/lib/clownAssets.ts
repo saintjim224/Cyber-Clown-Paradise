@@ -87,7 +87,9 @@ export function loadActiveJoker(): Joker | null {
   if (typeof window === "undefined") return null;
   try {
     const raw = window.localStorage.getItem(storageKey);
-    return raw ? JSON.parse(raw) as Joker : null;
+    if (!raw) return null;
+    const joker = JSON.parse(raw) as Joker;
+    return { ...joker, energy_score: joker.energy_score ?? 0 };
   } catch {
     return null;
   }

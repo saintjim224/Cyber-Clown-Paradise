@@ -64,10 +64,53 @@ export const liangjiangCampus = {
   name: "西南政法大学两江校区",
   shortName: "西政两江校区",
   address: "重庆市两江新区宝圣大道301号",
-  center: [106.59422, 29.66408] as LngLatTuple,
-  zoom: 17.6,
+  center: [106.59302, 29.66433] as LngLatTuple,
+  zoom: 16.85,
   amapKeyword: "西南政法大学 两江校区"
 };
+
+// /map 使用高德真实经纬度；/park 的 PNG 示意图继续使用 mapPoint，不做互相换算。
+export const liangjiangAmapPositions = {
+  "lj-main-gate": [106.592743, 29.664056],
+  "lj-south-gate": [106.594963, 29.660786],
+  "lj-north-gate": [106.59645, 29.66637],
+  "lj-small-north-gate": [106.597529, 29.668975],
+  "lj-library": [106.593184, 29.661393],
+  "lj-zhizhi-building": [106.590965, 29.661645],
+  "lj-duxing-building": [106.59308, 29.66418],
+  "lj-jingye-building": [106.591871, 29.660743],
+  "lj-qinye-building": [106.593431, 29.664553],
+  "lj-boxue-building": [106.59488, 29.66615],
+  "lj-roman-square": [106.593847, 29.663281],
+  "lj-north-dorm": [106.592805, 29.668753],
+  "lj-west-dorm": [106.59002, 29.662572],
+  "lj-east-dorm": [106.59292, 29.65963],
+  "lj-north-sport-field": [106.595741, 29.667902],
+  "lj-south-sport-field": [106.588145, 29.660842],
+  "lj-north-playground": [106.59642, 29.66754],
+  "lj-north-canteen": [106.592448, 29.666999],
+  "lj-west-canteen": [106.589235, 29.661853],
+  "lj-east-canteen": [106.591742, 29.659873],
+  "lj-yuxiu-lake": [106.593997, 29.66272],
+  "lj-activity-center": [106.594621, 29.667054],
+  "lj-school-hospital": [106.596451, 29.666728]
+} satisfies Record<string, LngLatTuple>;
+
+const liangjiangAmapRoutePoints = {
+  "main-gate-to-lake": [106.59348, 29.66324],
+  "roman-to-main-gate": [106.59336, 29.66367],
+  "library-to-lake": [106.59358, 29.66212],
+  "north-field-to-roman": [106.59486, 29.66572],
+  "north-dorm-to-library": [106.59382, 29.66632]
+} satisfies Record<string, LngLatTuple>;
+
+function amapPosition(id: keyof typeof liangjiangAmapPositions): LngLatTuple {
+  return liangjiangAmapPositions[id];
+}
+
+function amapRoutePoint(id: keyof typeof liangjiangAmapRoutePoints): LngLatTuple {
+  return liangjiangAmapRoutePoints[id];
+}
 
 export const liangjiangPois: LiangjiangPoi[] = [
   {
@@ -75,7 +118,7 @@ export const liangjiangPois: LiangjiangPoi[] = [
     label: "中门",
     type: "gate",
     note: "地图底部中央校门，适合做展台扫码入园和首次投放小丑的位置。",
-    position: [106.59358, 29.66248],
+    position: amapPosition("lj-main-gate"),
     mapPoint: [767, 768]
   },
   {
@@ -83,7 +126,7 @@ export const liangjiangPois: LiangjiangPoi[] = [
     label: "南门",
     type: "gate",
     note: "地图左下方校门，靠近东苑食堂和南侧主路。",
-    position: [106.59108, 29.66262],
+    position: amapPosition("lj-south-gate"),
     mapPoint: [62, 675]
   },
   {
@@ -91,7 +134,7 @@ export const liangjiangPois: LiangjiangPoi[] = [
     label: "北门",
     type: "gate",
     note: "地图右下方校门，靠近生活活动中心和校医院。",
-    position: [106.59586, 29.66224],
+    position: amapPosition("lj-north-gate"),
     mapPoint: [1288, 846]
   },
   {
@@ -99,7 +142,7 @@ export const liangjiangPois: LiangjiangPoi[] = [
     label: "小北门",
     type: "gate",
     note: "地图最右下角出入口，连通北苑宿舍和校外道路。",
-    position: [106.59712, 29.66278],
+    position: amapPosition("lj-small-north-gate"),
     mapPoint: [1582, 754]
   },
   {
@@ -107,7 +150,7 @@ export const liangjiangPois: LiangjiangPoi[] = [
     label: "图书馆",
     type: "study",
     note: "位于毓秀湖西侧，适合安静对话和回访卡。",
-    position: [106.59238, 29.66458],
+    position: amapPosition("lj-library"),
     mapPoint: [608, 488]
   },
   {
@@ -115,7 +158,7 @@ export const liangjiangPois: LiangjiangPoi[] = [
     label: "致知楼",
     type: "study",
     note: "地图中央偏上教学楼，靠近学习楼群主轴。",
-    position: [106.59304, 29.6651],
+    position: amapPosition("lj-zhizhi-building"),
     mapPoint: [756, 188]
   },
   {
@@ -123,7 +166,7 @@ export const liangjiangPois: LiangjiangPoi[] = [
     label: "笃行楼",
     type: "study",
     note: "地图中央偏右教学楼，位于罗马广场北侧。",
-    position: [106.59408, 29.66508],
+    position: amapPosition("lj-duxing-building"),
     mapPoint: [944, 188]
   },
   {
@@ -131,7 +174,7 @@ export const liangjiangPois: LiangjiangPoi[] = [
     label: "敬业楼",
     type: "study",
     note: "地图中央偏左教学楼，靠近图书馆北侧道路。",
-    position: [106.59254, 29.66442],
+    position: amapPosition("lj-jingye-building"),
     mapPoint: [636, 329]
   },
   {
@@ -139,7 +182,7 @@ export const liangjiangPois: LiangjiangPoi[] = [
     label: "勤业楼",
     type: "study",
     note: "地图中央偏右教学楼，位于罗马广场东侧。",
-    position: [106.59474, 29.66436],
+    position: amapPosition("lj-qinye-building"),
     mapPoint: [1058, 329]
   },
   {
@@ -147,7 +190,7 @@ export const liangjiangPois: LiangjiangPoi[] = [
     label: "博学楼",
     type: "study",
     note: "地图右中部教学楼，靠近生活活动中心北侧。",
-    position: [106.59528, 29.6638],
+    position: amapPosition("lj-boxue-building"),
     mapPoint: [1160, 411]
   },
   {
@@ -155,7 +198,7 @@ export const liangjiangPois: LiangjiangPoi[] = [
     label: "罗马广场",
     type: "social",
     note: "地图中央广场，适合气球投递、短句搭话和多人社交事件。",
-    position: [106.59325, 29.66362],
+    position: amapPosition("lj-roman-square"),
     mapPoint: [907, 395]
   },
   {
@@ -163,7 +206,7 @@ export const liangjiangPois: LiangjiangPoi[] = [
     label: "北苑宿舍",
     type: "dorm",
     note: "地图右上方宿舍区，承接夜间回访和私密气球。",
-    position: [106.59662, 29.66536],
+    position: amapPosition("lj-north-dorm"),
     mapPoint: [1408, 159]
   },
   {
@@ -171,7 +214,7 @@ export const liangjiangPois: LiangjiangPoi[] = [
     label: "西苑宿舍",
     type: "dorm",
     note: "地图左上方宿舍区，靠近西苑食堂和南苑运动场。",
-    position: [106.59202, 29.66552],
+    position: amapPosition("lj-west-dorm"),
     mapPoint: [492, 88]
   },
   {
@@ -179,7 +222,7 @@ export const liangjiangPois: LiangjiangPoi[] = [
     label: "东苑宿舍",
     type: "dorm",
     note: "地图左中部宿舍区，靠近东苑食堂。",
-    position: [106.59172, 29.66396],
+    position: amapPosition("lj-east-dorm"),
     mapPoint: [330, 427]
   },
   {
@@ -187,7 +230,7 @@ export const liangjiangPois: LiangjiangPoi[] = [
     label: "北苑运动场",
     type: "sport",
     note: "地图右上方田径场，适合加油、转圈和鼓掌事件。",
-    position: [106.59576, 29.66492],
+    position: amapPosition("lj-north-sport-field"),
     mapPoint: [1424, 276]
   },
   {
@@ -195,7 +238,7 @@ export const liangjiangPois: LiangjiangPoi[] = [
     label: "南苑运动场",
     type: "sport",
     note: "地图左上方田径场，适合大型现场入园和队伍事件。",
-    position: [106.59086, 29.66542],
+    position: amapPosition("lj-south-sport-field"),
     mapPoint: [176, 66]
   },
   {
@@ -203,7 +246,7 @@ export const liangjiangPois: LiangjiangPoi[] = [
     label: "北苑操场",
     type: "sport",
     note: "地图右中部沙地操场，适合轻运动和放风互动。",
-    position: [106.59618, 29.66398],
+    position: amapPosition("lj-north-playground"),
     mapPoint: [1424, 459]
   },
   {
@@ -211,7 +254,7 @@ export const liangjiangPois: LiangjiangPoi[] = [
     label: "北苑食堂",
     type: "service",
     note: "地图右上方食堂，靠近北苑宿舍。",
-    position: [106.59536, 29.66534],
+    position: amapPosition("lj-north-canteen"),
     mapPoint: [1214, 127]
   },
   {
@@ -219,7 +262,7 @@ export const liangjiangPois: LiangjiangPoi[] = [
     label: "西苑食堂",
     type: "service",
     note: "地图左上方食堂，靠近西苑宿舍。",
-    position: [106.5917, 29.66486],
+    position: amapPosition("lj-west-canteen"),
     mapPoint: [382, 185]
   },
   {
@@ -227,7 +270,7 @@ export const liangjiangPois: LiangjiangPoi[] = [
     label: "东苑食堂",
     type: "service",
     note: "地图左下方食堂，靠近东苑宿舍和南门。",
-    position: [106.59203, 29.66478],
+    position: amapPosition("lj-east-canteen"),
     mapPoint: [288, 562]
   },
   {
@@ -235,7 +278,7 @@ export const liangjiangPois: LiangjiangPoi[] = [
     label: "毓秀湖湖畔",
     type: "lake",
     note: "地图中央偏下湖区，适合 I 人低压陪走和一句话回访。",
-    position: [106.59392, 29.66294],
+    position: amapPosition("lj-yuxiu-lake"),
     mapPoint: [845, 562]
   },
   {
@@ -243,7 +286,7 @@ export const liangjiangPois: LiangjiangPoi[] = [
     label: "生活活动中心",
     type: "service",
     note: "地图右下方公共服务建筑，适合活动集合与回放墙入口。",
-    position: [106.59496, 29.6629],
+    position: amapPosition("lj-activity-center"),
     mapPoint: [1140, 650]
   },
   {
@@ -251,7 +294,7 @@ export const liangjiangPois: LiangjiangPoi[] = [
     label: "校医院",
     type: "service",
     note: "地图右下方校医院，适合安全提示和低压休息点。",
-    position: [106.59636, 29.66286],
+    position: amapPosition("lj-school-hospital"),
     mapPoint: [1336, 648]
   }
 ];
@@ -265,7 +308,7 @@ export const demoClowns: DemoClown[] = [
     status: "正在找一个不尴尬的开场白",
     line: "我先替你打个招呼，气球已经递过去了。",
     action: "给社交广场附近的小丑递出一只蓝色气球",
-    position: [106.59358, 29.66248],
+    position: amapPosition("lj-main-gate"),
     mapPoint: [767, 768],
     color: "#e23d2f",
     accent: "#ffd84a"
@@ -278,7 +321,7 @@ export const demoClowns: DemoClown[] = [
     status: "在湖边收集没说出口的话",
     line: "你不用马上回答，我在旁边走一会儿。",
     action: "把一条短句挂到湖畔回访卡",
-    position: [106.59392, 29.66294],
+    position: amapPosition("lj-yuxiu-lake"),
     mapPoint: [845, 562],
     color: "#2c67c7",
     accent: "#9be36d"
@@ -291,7 +334,7 @@ export const demoClowns: DemoClown[] = [
     status: "在广场发起 8 秒钟社交盲盒",
     line: "别怕，我已经替你笑了一下。",
     action: "向最近的小丑发起挥手和转圈动作",
-    position: [106.59325, 29.66362],
+    position: amapPosition("lj-roman-square"),
     mapPoint: [907, 395],
     color: "#ff5f8f",
     accent: "#27f5d4"
@@ -304,7 +347,7 @@ export const demoClowns: DemoClown[] = [
     status: "在学习楼群旁边做社交笔记",
     line: "我替你记住了，对方喜欢被认真听完。",
     action: "记录一次低压对话并生成一句回访判词",
-    position: [106.59238, 29.66458],
+    position: amapPosition("lj-library"),
     mapPoint: [608, 488],
     color: "#7c5cff",
     accent: "#ffe096"
@@ -317,7 +360,7 @@ export const demoClowns: DemoClown[] = [
     status: "在运动场给陌生人鼓掌",
     line: "我不认识你，但我刚刚给你加油了。",
     action: "把一次鼓掌事件推送到回放时间线",
-    position: [106.59576, 29.66492],
+    position: amapPosition("lj-north-sport-field"),
     mapPoint: [1424, 276],
     color: "#26b86d",
     accent: "#ffd84a"
@@ -330,7 +373,7 @@ export const demoClowns: DemoClown[] = [
     status: "在宿舍区整理今天的社交回放",
     line: "今天你没有消失，你只是让小丑先出门了。",
     action: "把宿舍区的匿名回访写进时间线",
-    position: [106.59662, 29.66536],
+    position: amapPosition("lj-north-dorm"),
     mapPoint: [1408, 159],
     color: "#f08a24",
     accent: "#b7f7ff"
@@ -350,9 +393,9 @@ export const demoEvents: SocialEvent[] = [
     createdAt: "2026-06-06T09:20:00.000+08:00",
     status: "done",
     path: [
-      [106.59358, 29.66248],
-      [106.59358, 29.66312],
-      [106.59392, 29.66294]
+      amapPosition("lj-main-gate"),
+      amapRoutePoint("main-gate-to-lake"),
+      amapPosition("lj-yuxiu-lake")
     ],
     mapPath: [
       [767, 768],
@@ -372,9 +415,9 @@ export const demoEvents: SocialEvent[] = [
     createdAt: "2026-06-06T09:27:00.000+08:00",
     status: "live",
     path: [
-      [106.59325, 29.66362],
-      [106.59342, 29.66306],
-      [106.59358, 29.66248]
+      amapPosition("lj-roman-square"),
+      amapRoutePoint("roman-to-main-gate"),
+      amapPosition("lj-main-gate")
     ],
     mapPath: [
       [907, 395],
@@ -394,9 +437,9 @@ export const demoEvents: SocialEvent[] = [
     createdAt: "2026-06-06T09:33:00.000+08:00",
     status: "replay",
     path: [
-      [106.59238, 29.66458],
-      [106.59318, 29.66372],
-      [106.59392, 29.66294]
+      amapPosition("lj-library"),
+      amapRoutePoint("library-to-lake"),
+      amapPosition("lj-yuxiu-lake")
     ],
     mapPath: [
       [608, 488],
@@ -416,9 +459,9 @@ export const demoEvents: SocialEvent[] = [
     createdAt: "2026-06-06T09:38:00.000+08:00",
     status: "done",
     path: [
-      [106.59576, 29.66492],
-      [106.59442, 29.66422],
-      [106.59325, 29.66362]
+      amapPosition("lj-north-sport-field"),
+      amapRoutePoint("north-field-to-roman"),
+      amapPosition("lj-roman-square")
     ],
     mapPath: [
       [1424, 276],
@@ -438,9 +481,9 @@ export const demoEvents: SocialEvent[] = [
     createdAt: "2026-06-06T09:45:00.000+08:00",
     status: "waiting",
     path: [
-      [106.59662, 29.66536],
-      [106.59442, 29.66462],
-      [106.59238, 29.66458]
+      amapPosition("lj-north-dorm"),
+      amapRoutePoint("north-dorm-to-library"),
+      amapPosition("lj-library")
     ],
     mapPath: [
       [1408, 159],

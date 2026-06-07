@@ -157,7 +157,7 @@ async def submit_action(
 @app.get("/api/replay/{token}", response_model=ReplayOut)
 async def replay(token: str, session: AsyncSession = Depends(get_session)) -> ReplayOut:
     try:
-        joker, balloons, actions, events = await ReplayService(session).get_by_token(token)
+        joker, balloons, actions, events, received_replies, sent_replies, relationships = await ReplayService(session).get_by_token(token)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -172,6 +172,10 @@ async def replay(token: str, session: AsyncSession = Depends(get_session)) -> Re
         balloons=[BalloonOut.model_validate(item) for item in balloons],
         actions=[HealActionOut.model_validate(item) for item in actions],
         events=[ParkEventOut.model_validate(item) for item in events],
+        received_replies=received_replies,
+        sent_replies=sent_replies,
+        relationships=relationships,
+        energy_score=joker.energy_score,
         headline=headline,
         share_text=share_text,
     )

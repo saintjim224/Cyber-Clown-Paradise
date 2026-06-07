@@ -45,6 +45,13 @@ def _ensure_compatible_columns(sync_conn) -> None:
             "avatar_recipe": json_type,
             "face_descriptor": json_type,
             "avatar_status": "VARCHAR(24) DEFAULT 'recipe_ready'",
+            "energy_score": "INTEGER DEFAULT 0",
+        },
+        "heal_actions": {
+            "recipient_id": "VARCHAR(32)",
+            "energy_delta_healer": "INTEGER DEFAULT 1",
+            "energy_delta_owner": "INTEGER DEFAULT 2",
+            "affinity_delta": "INTEGER DEFAULT 3",
         },
         "avatar_jobs": {
             "input_descriptor": json_type,
@@ -69,6 +76,7 @@ def _ensure_compatible_columns(sync_conn) -> None:
         "owner_session_id",
         unique=True,
     )
+    _ensure_index(sync_conn, inspector, "heal_actions", "ix_heal_actions_recipient_id", "recipient_id")
 
 
 def _ensure_index(sync_conn, inspector, table_name: str, index_name: str, column_name: str, unique: bool = False) -> None:

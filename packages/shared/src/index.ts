@@ -123,6 +123,7 @@ export const jokerSchema = z.object({
   soul_profile: soulProfileSchema.nullable(),
   avatar_recipe: avatarRecipeSchema.nullable(),
   avatar_status: z.string().nullable(),
+  energy_score: z.number().int().default(0),
 });
 
 export type Joker = z.infer<typeof jokerSchema>;

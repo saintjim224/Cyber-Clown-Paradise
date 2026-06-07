@@ -5,8 +5,10 @@ import type { Balloon, HealAction, Joker, MatchResult } from "@/lib/api";
 import {
   demoClowns,
   demoEvents,
+  liangjiangMapImage,
   liangjiangPois,
   type DemoClown,
+  type ImagePointTuple,
   type LiangjiangPoi,
   type LngLatTuple,
   type SocialEvent
@@ -71,8 +73,19 @@ function randomItem<T>(items: readonly T[]) {
   return items[Math.floor(Math.random() * items.length)];
 }
 
+function poiById(id: string): LiangjiangPoi {
+  return liangjiangPois.find((poi) => poi.id === id) ?? liangjiangPois[0];
+}
+
 function nowIso() {
   return new Date().toISOString();
+}
+
+function offsetMapPoint(point: ImagePointTuple, scale = 28): ImagePointTuple {
+  return [
+    Math.max(24, Math.min(liangjiangMapImage.width - 24, Math.round(point[0] + (Math.random() - 0.5) * scale))),
+    Math.max(24, Math.min(liangjiangMapImage.height - 24, Math.round(point[1] + (Math.random() - 0.5) * scale)))
+  ];
 }
 
 function offsetPosition(position: LngLatTuple, scale = 0.00018): LngLatTuple {
@@ -87,13 +100,13 @@ function nearestPoi(position: LngLatTuple): LiangjiangPoi {
     const bestDistance = Math.hypot(nearest.position[0] - position[0], nearest.position[1] - position[1]);
     const distance = Math.hypot(poi.position[0] - position[0], poi.position[1] - position[1]);
     return distance < bestDistance ? poi : nearest;
-  }, liangjiangPois[0]);
+  }, poiById("lj-main-gate"));
 }
 
 function makeJoinClown(index: number): DemoClown {
   const [color, accent] = palette[index % palette.length];
   const energy = randomItem<Energy>(["I", "E", "A"]);
-  const spawnPoi = randomItem([liangjiangPois[0], liangjiangPois[2], liangjiangPois[5]]);
+  const spawnPoi = randomItem([poiById("lj-main-gate"), poiById("lj-roman-square"), poiById("lj-north-canteen")]);
 
   return {
     id: `guest-clown-${Date.now()}-${index}`,
@@ -104,6 +117,7 @@ function makeJoinClown(index: number): DemoClown {
     line: energy === "I" ? "我先在旁边看一会儿。" : "我可以先替你挥手。",
     action: "加入两江校区实时游园",
     position: offsetPosition(spawnPoi.position, 0.00026),
+    mapPoint: offsetMapPoint(spawnPoi.mapPoint, 36),
     color,
     accent
   };
@@ -111,7 +125,7 @@ function makeJoinClown(index: number): DemoClown {
 
 function makeJokerClown(joker: Joker, index: number): DemoClown {
   const paletteTokens = joker.style_tokens?.palette;
-  const spawnPoi = joker.social_energy === "I" ? liangjiangPois[6] : liangjiangPois[2];
+  const spawnPoi = joker.social_energy === "I" ? poiById("lj-yuxiu-lake") : poiById("lj-roman-square");
   const sampleLine = joker.soul_profile?.sample_lines?.[0] ?? joker.verdict;
 
   return {
@@ -123,6 +137,7 @@ function makeJokerClown(joker: Joker, index: number): DemoClown {
     line: sampleLine,
     action: "正在播放自己的专属动作，准备加入实时游园",
     position: offsetPosition(spawnPoi.position, 0.00022 + index * 0.000002),
+    mapPoint: offsetMapPoint(spawnPoi.mapPoint, 32 + index),
     color: paletteTokens?.primary ?? palette[index % palette.length][0],
     accent: paletteTokens?.accent ?? palette[index % palette.length][1],
     image: joker.avatar_recipe?.preview_url,
@@ -157,7 +172,8 @@ function makeReplyEvents(
     moodDelta: currentEvent.moodDelta + 2,
     createdAt: nowIso(),
     status: "done",
-    path: from ? [from.position, responder.position] : currentEvent.path
+    path: from ? [from.position, responder.position] : currentEvent.path,
+    mapPath: from ? [from.mapPoint, responder.mapPoint] : currentEvent.mapPath
   };
   const replay: SocialEvent = {
     id: makeId("replay"),
@@ -170,7 +186,8 @@ function makeReplyEvents(
     moodDelta: 1,
     createdAt: nowIso(),
     status: "replay",
-    path: replied.path
+    path: replied.path,
+    mapPath: replied.mapPath
   };
 
   return [replied, replay];
@@ -213,7 +230,8 @@ export function useLiveSocialEvents(): UseLiveSocialEventsResult {
       moodDelta: 2,
       createdAt: nowIso(),
       status: "live",
-      path: [clown.position, poi.position]
+      path: [clown.position, poi.position],
+      mapPath: [clown.mapPoint, poi.mapPoint]
     };
 
     setClowns((current) => (current.some((item) => item.id === clown.id) ? current : [...current, clown]));
@@ -241,7 +259,8 @@ export function useLiveSocialEvents(): UseLiveSocialEventsResult {
       moodDelta: 1,
       createdAt: nowIso(),
       status: "live",
-      path: [clown.position, poi.position]
+      path: [clown.position, poi.position],
+      mapPath: [clown.mapPoint, poi.mapPoint]
     };
 
     setClowns((current) => [...current, clown]);
@@ -272,7 +291,8 @@ export function useLiveSocialEvents(): UseLiveSocialEventsResult {
         moodDelta: 1 + (index % 2),
         createdAt: nowIso(),
         status: index === 0 ? "live" : "done",
-        path: [clown.position, poi.position]
+        path: [clown.position, poi.position],
+        mapPath: [clown.mapPoint, poi.mapPoint]
       };
     });
 
@@ -293,7 +313,7 @@ export function useLiveSocialEvents(): UseLiveSocialEventsResult {
     const sender = currentClowns.find((clown) => clown.id === options.senderId) ??
       currentClowns.find((clown) => clown.id.startsWith("guest-clown")) ??
       currentClowns[0];
-    const poi = randomItem([liangjiangPois[2], liangjiangPois[6], liangjiangPois[4]]);
+    const poi = randomItem([poiById("lj-roman-square"), poiById("lj-yuxiu-lake"), poiById("lj-north-sport-field")]);
     const event: SocialEvent = {
       id: options.balloon?.id ?? makeId("balloon"),
       title: `${options.mood}气球`,
@@ -304,7 +324,8 @@ export function useLiveSocialEvents(): UseLiveSocialEventsResult {
       moodDelta: 1,
       createdAt: nowIso(),
       status: "waiting",
-      path: [sender.position, poi.position]
+      path: [sender.position, poi.position],
+      mapPath: [sender.mapPoint, poi.mapPoint]
     };
 
     setEvents((current) => withBoundedEvents([...current, event]));
@@ -318,7 +339,7 @@ export function useLiveSocialEvents(): UseLiveSocialEventsResult {
 
     const currentClowns = clownsRef.current;
     const owner = currentClowns.find((clown) => clown.id === match.owner_id);
-    const poi = randomItem([liangjiangPois[2], liangjiangPois[6], liangjiangPois[4]]);
+    const poi = randomItem([poiById("lj-roman-square"), poiById("lj-yuxiu-lake"), poiById("lj-north-sport-field")]);
     const event: SocialEvent = {
       id: match.balloon_id,
       title: "待接力气球",
@@ -329,7 +350,8 @@ export function useLiveSocialEvents(): UseLiveSocialEventsResult {
       moodDelta: 1,
       createdAt: nowIso(),
       status: "waiting",
-      path: owner ? [owner.position, poi.position] : [poi.position]
+      path: owner ? [owner.position, poi.position] : [poi.position],
+      mapPath: owner ? [owner.mapPoint, poi.mapPoint] : [poi.mapPoint]
     };
 
     eventsRef.current = withBoundedEvents([...eventsRef.current, event]);
@@ -394,7 +416,8 @@ export function useLiveSocialEvents(): UseLiveSocialEventsResult {
         moodDelta: 1 + (tickCountRef.current % 3),
         createdAt: nowIso(),
         status: "live",
-        path: [from.position, offsetPosition(poi.position, 0.00016), to.position]
+        path: [from.position, offsetPosition(poi.position, 0.00016), to.position],
+        mapPath: [from.mapPoint, offsetMapPoint(poi.mapPoint, 26), to.mapPoint]
       };
 
       setEvents((current) =>
