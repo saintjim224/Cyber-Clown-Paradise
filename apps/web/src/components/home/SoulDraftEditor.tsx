@@ -1,16 +1,19 @@
 "use client";
 
-import { RefreshCcw, Sparkles, WandSparkles } from "lucide-react";
+import { MapPin, RefreshCcw, Sparkles, WandSparkles } from "lucide-react";
 import { PixelAvatarBadge } from "@/components/pixel/PixelAvatarBadge";
 import type { JokerDraft, SoulProfile } from "@/lib/api";
+import { liangjiangPois, poiTypeText } from "@/lib/socialMapData";
 
 type SoulDraftEditorProps = {
   draft: JokerDraft;
   draftSoul: SoulProfile;
   draftVerdict: string;
+  desiredPoiId: string | null;
   loading: boolean;
   onSoulChange: <K extends keyof SoulProfile>(field: K, value: SoulProfile[K]) => void;
   onVerdictChange: (value: string) => void;
+  onDesiredPoiChange: (value: string) => void;
   onRegenerate: () => void;
   onSubmit: () => void;
   titleId?: string;
@@ -32,9 +35,11 @@ export function SoulDraftEditor({
   draft,
   draftSoul,
   draftVerdict,
+  desiredPoiId,
   loading,
   onSoulChange,
   onVerdictChange,
+  onDesiredPoiChange,
   onRegenerate,
   onSubmit,
   titleId
@@ -71,6 +76,25 @@ export function SoulDraftEditor({
           <textarea id="verdict" value={draftVerdict} onChange={(event) => onVerdictChange(event.target.value)} />
         </div>
         <div className="field">
+          <label id="desiredPoiLabel">期望小丑在哪</label>
+          <div className="poi-choice-grid" role="group" aria-labelledby="desiredPoiLabel">
+            {liangjiangPois.map((poi) => (
+              <button
+                key={poi.id}
+                type="button"
+                className="poi-choice-button"
+                data-active={desiredPoiId === poi.id}
+                aria-pressed={desiredPoiId === poi.id}
+                onClick={() => onDesiredPoiChange(poi.id)}
+              >
+                <MapPin size={14} aria-hidden />
+                <strong>{poi.label}</strong>
+                <span>{poiTypeText[poi.type]}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="field">
           <label htmlFor="behaviorRules">会做的行为</label>
           <textarea id="behaviorRules" value={joinLines(draftSoul.behavior_rules)} onChange={(event) => onSoulChange("behavior_rules", splitLines(event.target.value))} />
         </div>
@@ -87,7 +111,7 @@ export function SoulDraftEditor({
             <RefreshCcw size={18} aria-hidden />
             重新生成草案
           </button>
-          <button className="primary-button" type="button" disabled={loading || !draftSoul.core_personality || !draftVerdict} onClick={onSubmit}>
+          <button className="primary-button" type="button" disabled={loading || !draftSoul.core_personality || !draftVerdict || !desiredPoiId} onClick={onSubmit}>
             <WandSparkles size={18} aria-hidden />
             {loading ? "生成中" : "生成小丑"}
           </button>

@@ -40,6 +40,7 @@ def _ensure_compatible_columns(sync_conn) -> None:
     additions = {
         "joker_profiles": {
             "owner_session_id": "VARCHAR(64)",
+            "desired_poi_id": "VARCHAR(48)",
             "soul_seed": "TEXT",
             "soul_profile": json_type,
             "avatar_recipe": json_type,

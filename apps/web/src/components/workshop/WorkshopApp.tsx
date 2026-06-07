@@ -38,6 +38,7 @@ export function WorkshopApp() {
   const [draft, setDraft] = useState<JokerDraft | null>(null);
   const [draftSoul, setDraftSoul] = useState<SoulProfile | null>(null);
   const [draftVerdict, setDraftVerdict] = useState("");
+  const [desiredPoiId, setDesiredPoiId] = useState<string | null>(null);
   const [joker, setJoker] = useState<Joker | null>(null);
   const [balloonText, setBalloonText] = useState("");
   const [balloon, setBalloon] = useState<Balloon | null>(null);
@@ -78,6 +79,7 @@ export function WorkshopApp() {
       setDraft(created);
       setDraftSoul(created.soul_profile);
       setDraftVerdict(created.verdict);
+      setDesiredPoiId(null);
       setJoker(null);
       setShowDraftModal(true);
       setShowClownReveal(false);
@@ -91,6 +93,10 @@ export function WorkshopApp() {
 
   async function generateClown() {
     if (!draft || !draftSoul) return;
+    if (!desiredPoiId) {
+      setError("先选择小丑入园后想出现的位置。");
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -111,6 +117,7 @@ export function WorkshopApp() {
           mbti,
           constellation,
           social_energy: socialEnergy,
+          desired_poi_id: desiredPoiId,
           consent_media: consentMedia,
           soul_seed: soulSeed,
           face_descriptor: faceDescriptor,
@@ -307,10 +314,12 @@ export function WorkshopApp() {
               draft={draft}
               draftSoul={draftSoul}
               draftVerdict={draftVerdict}
+              desiredPoiId={desiredPoiId}
               loading={loading}
               titleId="draftConfirmTitle"
               onSoulChange={updateSoul}
               onVerdictChange={setDraftVerdict}
+              onDesiredPoiChange={setDesiredPoiId}
               onRegenerate={() => void generateDraft()}
               onSubmit={() => void generateClown()}
             />

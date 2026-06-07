@@ -83,6 +83,11 @@ export function saveActiveJoker(joker: Joker) {
   window.localStorage.setItem(storageKey, JSON.stringify(joker));
 }
 
+export function clearActiveJoker() {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(storageKey);
+}
+
 export function loadActiveJoker(): Joker | null {
   if (typeof window === "undefined") return null;
   try {

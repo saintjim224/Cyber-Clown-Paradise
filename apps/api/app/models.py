@@ -49,6 +49,7 @@ class JokerProfile(Base, TimestampMixin):
     mbti: Mapped[str] = mapped_column(String(4), index=True)
     constellation: Mapped[str] = mapped_column(String(16), index=True)
     social_energy: Mapped[str] = mapped_column(String(1), index=True)
+    desired_poi_id: Mapped[str | None] = mapped_column(String(48), nullable=True)
     consent_media: Mapped[bool] = mapped_column(Boolean, default=False)
     persona: Mapped[str] = mapped_column(Text)
     verdict: Mapped[str] = mapped_column(Text)
@@ -121,6 +122,14 @@ class JokerRelationship(Base, TimestampMixin):
     affinity_score: Mapped[int] = mapped_column(Integer, default=0)
     interaction_count: Mapped[int] = mapped_column(Integer, default=0)
     last_action_id: Mapped[str | None] = mapped_column(ForeignKey("heal_actions.id"), nullable=True)
+
+
+class ClownVote(Base, TimestampMixin):
+    __tablename__ = "clown_votes"
+    __table_args__ = (Index("ix_clown_votes_clown_id", "clown_id"),)
+
+    voter_session_id: Mapped[str] = mapped_column(ForeignKey("user_sessions.id"), primary_key=True)
+    clown_id: Mapped[str] = mapped_column(String(96), nullable=False)
 
 
 class InteractionEvent(Base, TimestampMixin):

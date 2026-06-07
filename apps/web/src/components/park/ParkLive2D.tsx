@@ -1,12 +1,12 @@
 "use client";
 
-import type { CSSProperties, FormEvent, PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent } from "react";
+import type { CSSProperties, FormEvent, PointerEvent as ReactPointerEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Activity, CheckCircle, Clock, History, MapPin, Radio, Reply, RotateCcw, Send, Sparkles, UserPlus, Users, X, ZoomIn, ZoomOut } from "lucide-react";
+import { Activity, CheckCircle, Clock, Heart, History, MapPin, Radio, Reply, RotateCcw, Send, Sparkles, Trophy, X, ZoomIn, ZoomOut } from "lucide-react";
 import { ClownSprite } from "@/components/pixel/ClownSprite";
 import { useLiveSocialEvents } from "@/hooks/useLiveSocialEvents";
-import { loadActiveJoker, saveActiveJoker } from "@/lib/clownAssets";
-import { apiFetch, type Balloon, type HealAction, type Joker, type MatchResult } from "@/lib/api";
+import { clearActiveJoker, loadActiveJoker, saveActiveJoker } from "@/lib/clownAssets";
+import { apiFetch, type Balloon, type ClownVoteSummary, type HealAction, type Joker, type MatchRequest, type MatchResult } from "@/lib/api";
 import {
   eventStatusText,
   eventTypeText,
@@ -42,6 +42,33 @@ type ViewportSize = {
   height: number;
 };
 
+type GesturePointer = {
+  id: number;
+  x: number;
+  y: number;
+};
+
+type DragGesture = {
+  type: "drag";
+  pointerId: number;
+  startX: number;
+  startY: number;
+  originX: number;
+  originY: number;
+};
+
+type PinchGesture = {
+  type: "pinch";
+  startDistance: number;
+  startCenterX: number;
+  startCenterY: number;
+  origin: MapView;
+};
+
+type MapGesture = DragGesture | PinchGesture;
+
+type MapViewUpdater = MapView | ((current: MapView) => MapView);
+
 type ReplyActionType = "hug" | "pet" | "cheer" | "dance";
 
 type ReplyDraft = {
@@ -49,6 +76,13 @@ type ReplyDraft = {
   match: MatchResult;
   actionType: ReplyActionType;
   cheerText: string;
+};
+
+type ReplyComposerOptions = {
+  eventId?: string;
+  preferredAction?: ReplyActionType;
+  targetOwnerId?: string;
+  targetClownName?: string;
 };
 
 const statusOrder: SocialEvent["status"][] = ["live", "waiting", "done", "replay"];
@@ -96,6 +130,17 @@ function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
 
+function pointerDistance(first: GesturePointer, second: GesturePointer) {
+  return Math.hypot(second.x - first.x, second.y - first.y);
+}
+
+function pointerCenter(first: GesturePointer, second: GesturePointer) {
+  return {
+    x: (first.x + second.x) / 2,
+    y: (first.y + second.y) / 2
+  };
+}
+
 function getEventPoi(event: SocialEvent): LiangjiangPoi | null {
   return event.poiId ? liangjiangPois.find((item) => item.id === event.poiId) ?? null : null;
 }
@@ -139,8 +184,26 @@ function defaultReplyText(actionType: ReplyActionType) {
   return replyActionCards.find((card) => card.type === actionType)?.defaultText ?? replyActionCards[0].defaultText;
 }
 
+function isDemoClownId(id: string | undefined) {
+  return Boolean(id?.startsWith("demo-clown-"));
+}
+
+const sessionJokerPrompt = "先在灵魂工坊生成你的专属小丑，再回来投放气球。";
+
+function commandErrorMessage(error: unknown, fallback: string, targetClownName?: string) {
+  const message = error instanceof Error ? error.message : "";
+  if (message.includes("no_active_joker") || message.includes("token_not_found")) return sessionJokerPrompt;
+  if (message.includes("no_pending_balloon_for_target")) {
+    return targetClownName ? `${targetClownName} 现在没有待接气球。` : "这个小丑现在没有待接气球。";
+  }
+  if (message.includes("target_joker_not_found")) return "这个小丑刚刚离开了乐园，换一个目标试试。";
+  if (message.includes("cannot_heal_own_balloon")) return "不能接自己的气球，试试选择其他小丑。";
+  if (message.includes("no_pending_balloon")) return "现在还没有其他人的待接气球。";
+  return message || fallback;
+}
+
 export function ParkLive2D() {
-  const { clowns, events, activeEvent, joinPark, joinWave, dropBalloon, ensureMatchedBalloon, replyToEvent, focusEvent, addJokerToPark } = useLiveSocialEvents();
+  const { clowns, events, activeEvent, dropBalloon, ensureMatchedBalloon, replyToEvent, focusEvent, addJokerToPark, syncParkJokers } = useLiveSocialEvents();
   const [selected, setSelected] = useState<Selection>({ kind: "event", id: activeEvent?.id ?? events[0]?.id ?? "" });
   const [activeModule, setActiveModule] = useState<SocialEvent["status"]>("live");
   const [balloonText, setBalloonText] = useState("");
@@ -148,14 +211,18 @@ export function ParkLive2D() {
   const [activeJoker, setActiveJoker] = useState<Joker | null>(null);
   const [commandLoading, setCommandLoading] = useState(false);
   const [commandError, setCommandError] = useState<string | null>(null);
+  const [voteSummary, setVoteSummary] = useState<ClownVoteSummary>({ items: [], voted_clown_id: null });
+  const [voteSubmittingId, setVoteSubmittingId] = useState<string | null>(null);
   const [replyDraft, setReplyDraft] = useState<ReplyDraft | null>(null);
   const mapViewportRef = useRef<HTMLDivElement | null>(null);
-  const dragRef = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null);
+  const mapViewRef = useRef<MapView>(initialMapView);
+  const activePointersRef = useRef<Map<number, GesturePointer>>(new Map());
+  const gestureRef = useRef<MapGesture | null>(null);
   const [mapView, setMapView] = useState<MapView>(initialMapView);
   const [viewportSize, setViewportSize] = useState<ViewportSize>({ width: 0, height: 0 });
   const baseMapScale = useMemo(() => {
     if (viewportSize.width <= 0 || viewportSize.height <= 0) return 1;
-    return Math.min(viewportSize.width / liangjiangMapImage.width, viewportSize.height / liangjiangMapImage.height);
+    return Math.max(viewportSize.width / liangjiangMapImage.width, viewportSize.height / liangjiangMapImage.height);
   }, [viewportSize.height, viewportSize.width]);
   const effectiveMapScale = baseMapScale * mapView.scale;
 
@@ -166,9 +233,8 @@ export function ParkLive2D() {
 
       const scaledWidth = liangjiangMapImage.width * baseMapScale * scale;
       const scaledHeight = liangjiangMapImage.height * baseMapScale * scale;
-      const buffer = scale > 1 ? 72 : 0;
-      const maxX = Math.max(0, (scaledWidth - viewportSize.width) / 2) + buffer;
-      const maxY = Math.max(0, (scaledHeight - viewportSize.height) / 2) + buffer;
+      const maxX = Math.max(0, (scaledWidth - viewportSize.width) / 2);
+      const maxY = Math.max(0, (scaledHeight - viewportSize.height) / 2);
 
       return {
         scale,
@@ -178,6 +244,59 @@ export function ParkLive2D() {
     },
     [baseMapScale, viewportSize.height, viewportSize.width]
   );
+
+  const updateMapView = useCallback(
+    (next: MapViewUpdater) => {
+      setMapView((current) => {
+        const resolved = typeof next === "function" ? next(current) : next;
+        const clamped = clampMapView(resolved);
+        mapViewRef.current = clamped;
+        return clamped;
+      });
+    },
+    [clampMapView]
+  );
+
+  const zoomAroundPoint = useCallback((current: MapView, nextScale: number, clientX: number, clientY: number, rect: DOMRect): MapView => {
+    const scale = clamp(nextScale, minMapScale, maxMapScale);
+    const ratio = scale / current.scale;
+    const cursorX = clientX - rect.left - rect.width / 2 - current.x;
+    const cursorY = clientY - rect.top - rect.height / 2 - current.y;
+
+    return {
+      scale,
+      x: current.x - cursorX * (ratio - 1),
+      y: current.y - cursorY * (ratio - 1)
+    };
+  }, []);
+
+  const startDragGesture = useCallback((pointer: GesturePointer) => {
+    const current = mapViewRef.current;
+    gestureRef.current = {
+      type: "drag",
+      pointerId: pointer.id,
+      startX: pointer.x,
+      startY: pointer.y,
+      originX: current.x,
+      originY: current.y
+    };
+  }, []);
+
+  const startPinchGesture = useCallback((pointers: GesturePointer[], rect: DOMRect) => {
+    const [first, second] = pointers;
+    if (!first || !second) return;
+    const distance = pointerDistance(first, second);
+    if (distance <= 0) return;
+    const center = pointerCenter(first, second);
+
+    gestureRef.current = {
+      type: "pinch",
+      startDistance: distance,
+      startCenterX: center.x - rect.left - rect.width / 2,
+      startCenterY: center.y - rect.top - rect.height / 2,
+      origin: mapViewRef.current
+    };
+  }, []);
 
   useEffect(() => {
     const viewport = mapViewportRef.current;
@@ -194,28 +313,70 @@ export function ParkLive2D() {
   useEffect(() => {
     setMapView((current) => {
       const next = clampMapView(current);
+      mapViewRef.current = next;
       return next.scale === current.scale && next.x === current.x && next.y === current.y ? current : next;
     });
   }, [clampMapView]);
 
   useEffect(() => {
-    let cancelled = false;
+    mapViewRef.current = mapView;
+  }, [mapView]);
 
-    function activateJoker(joker: Joker) {
+  const activateSessionJoker = useCallback(
+    (joker: Joker) => {
       setActiveJoker(joker);
       const clown = addJokerToPark(joker);
       setSelected({ kind: "clown", id: clown.id });
+      return clown;
+    },
+    [addJokerToPark]
+  );
+
+  const restoreSessionJoker = useCallback(async () => {
+    try {
+      return await apiFetch<Joker>("/api/jokers/me");
+    } catch (sessionError) {
+      const storedJoker = loadActiveJoker();
+      if (storedJoker?.qr_token) {
+        try {
+          return await apiFetch<Joker>(`/api/jokers/enter/${encodeURIComponent(storedJoker.qr_token)}`, {
+            method: "POST"
+          });
+        } catch (restoreError) {
+          const message = restoreError instanceof Error ? restoreError.message : "";
+          if (message.includes("token_not_found")) clearActiveJoker();
+          throw restoreError;
+        }
+      } else {
+        clearActiveJoker();
+      }
+      throw sessionError;
     }
+  }, []);
+
+  const ensureSessionJoker = useCallback(async () => {
+    try {
+      const joker = await restoreSessionJoker();
+      saveActiveJoker(joker);
+      const clown = activateSessionJoker(joker);
+      return { joker, clown };
+    } catch (error) {
+      setActiveJoker(null);
+      throw error;
+    }
+  }, [activateSessionJoker, restoreSessionJoker]);
+
+  useEffect(() => {
+    let cancelled = false;
 
     async function loadSessionJoker() {
       try {
-        const sessionJoker = await apiFetch<Joker>("/api/jokers/me");
+        const sessionJoker = await restoreSessionJoker();
         if (cancelled) return;
         saveActiveJoker(sessionJoker);
-        activateJoker(sessionJoker);
+        activateSessionJoker(sessionJoker);
       } catch {
-        const storedJoker = loadActiveJoker();
-        if (!cancelled && storedJoker) activateJoker(storedJoker);
+        if (!cancelled) setActiveJoker(null);
       }
     }
 
@@ -224,11 +385,34 @@ export function ParkLive2D() {
     return () => {
       cancelled = true;
     };
-  }, [addJokerToPark]);
+  }, [activateSessionJoker, restoreSessionJoker]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSharedJokers() {
+      try {
+        const parkJokers = await apiFetch<Joker[]>("/api/park/jokers");
+        if (!cancelled) syncParkJokers(parkJokers);
+      } catch {
+        // Keep the local demo usable if the shared park list is temporarily unavailable.
+      }
+    }
+
+    void loadSharedJokers();
+    const timer = window.setInterval(() => void loadSharedJokers(), 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [syncParkJokers]);
 
   const focusedEvent = selected.kind === "event" ? events.find((event) => event.id === selected.id) ?? activeEvent : activeEvent;
   const focusedClown = selected.kind === "clown" ? clowns.find((clown) => clown.id === selected.id) ?? null : null;
   const focusedPoi = selected.kind === "poi" ? liangjiangPois.find((poi) => poi.id === selected.id) ?? null : null;
+  const focusedClownIsDemo = Boolean(focusedClown && isDemoClownId(focusedClown.id));
+  const focusedClownIsSelf = Boolean(activeJoker && focusedClown?.id === activeJoker.id);
+  const canReplyToFocusedClown = Boolean(activeJoker && focusedClown && !focusedClownIsDemo && !focusedClownIsSelf);
   const waitingEvent = events.find((event) => event.status === "waiting");
   const visibleEvents = events.slice(-14);
   const bucketEvents = events.filter((event) => event.status === activeModule).slice(-6).reverse();
@@ -239,6 +423,26 @@ export function ParkLive2D() {
   const recentCount = Math.max(events.filter(isRecent).length, events.slice(-5).filter((event) => event.status === "live").length);
   const relayCount = events.filter((event) => event.to || event.status === "done" || event.status === "replay").length;
   const focusedEventPoi = focusedEvent ? getEventPoi(focusedEvent) : null;
+  const voteableClowns = useMemo(
+    () => clowns.filter((clown) => !clown.id.startsWith("demo-clown-")),
+    [clowns]
+  );
+  const voteableClownIds = useMemo(() => voteableClowns.map((clown) => clown.id), [voteableClowns]);
+  const voteCountById = useMemo(
+    () => new Map(voteSummary.items.map((item) => [item.clown_id, item.votes])),
+    [voteSummary.items]
+  );
+  const rankedClowns = useMemo(
+    () =>
+      voteableClowns
+        .map((clown, index) => ({
+          clown,
+          initialIndex: index,
+          votes: voteCountById.get(clown.id) ?? 0
+        }))
+        .sort((left, right) => right.votes - left.votes || left.initialIndex - right.initialIndex),
+    [voteCountById, voteableClowns]
+  );
   const mapWorldStyle = useMemo(
     () =>
       ({
@@ -250,6 +454,45 @@ export function ParkLive2D() {
     [effectiveMapScale, mapView.scale, mapView.x, mapView.y]
   );
 
+  const refreshVoteSummary = useCallback(async () => {
+    if (voteableClownIds.length === 0) {
+      setVoteSummary({ items: [], voted_clown_id: null });
+      return;
+    }
+    const summary = await apiFetch<ClownVoteSummary>("/api/park/clown-votes/summary", {
+      method: "POST",
+      body: JSON.stringify({ clown_ids: voteableClownIds })
+    });
+    setVoteSummary(summary);
+  }, [voteableClownIds]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function pollVotes() {
+      try {
+        if (voteableClownIds.length === 0) {
+          if (!cancelled) setVoteSummary({ items: [], voted_clown_id: null });
+          return;
+        }
+        const summary = await apiFetch<ClownVoteSummary>("/api/park/clown-votes/summary", {
+          method: "POST",
+          body: JSON.stringify({ clown_ids: voteableClownIds })
+        });
+        if (!cancelled) setVoteSummary(summary);
+      } catch {
+        // Keep the current optimistic board visible if the vote endpoint blips.
+      }
+    }
+
+    void pollVotes();
+    const timer = window.setInterval(() => void pollVotes(), 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [voteableClownIds]);
+
   const centerMapOn = useCallback(
     (point: ImagePointTuple, nextScale = 1.72) => {
       if (viewportSize.width <= 0 || viewportSize.height <= 0) return;
@@ -260,83 +503,163 @@ export function ParkLive2D() {
         x: -(point[0] - liangjiangMapImage.width / 2) * effectiveScale,
         y: -(point[1] - liangjiangMapImage.height / 2) * effectiveScale
       };
-      setMapView(clampMapView(nextView));
+      updateMapView(nextView);
     },
-    [baseMapScale, clampMapView, viewportSize.height, viewportSize.width]
+    [baseMapScale, updateMapView, viewportSize.height, viewportSize.width]
   );
 
   const zoomMap = useCallback(
     (delta: number) => {
-      setMapView((current) =>
-        clampMapView({
-          ...current,
-          scale: current.scale + delta
-        })
-      );
+      const viewport = mapViewportRef.current;
+      if (!viewport) {
+        updateMapView((current) => ({ ...current, scale: current.scale + delta }));
+        return;
+      }
+      const rect = viewport.getBoundingClientRect();
+      updateMapView((current) => zoomAroundPoint(current, current.scale + delta, rect.left + rect.width / 2, rect.top + rect.height / 2, rect));
     },
-    [clampMapView]
+    [updateMapView, zoomAroundPoint]
   );
 
   const resetMap = useCallback(() => {
-    setMapView(initialMapView);
-  }, []);
+    updateMapView(initialMapView);
+  }, [updateMapView]);
 
   const handleMapWheel = useCallback(
-    (event: ReactWheelEvent<HTMLDivElement>) => {
+    (event: WheelEvent) => {
       event.preventDefault();
-      const rect = event.currentTarget.getBoundingClientRect();
+      const viewport = mapViewportRef.current;
+      if (!viewport) return;
+      const rect = viewport.getBoundingClientRect();
       const delta = event.deltaY > 0 ? -mapZoomStep : mapZoomStep;
-      setMapView((current) => {
-        const nextScale = clamp(current.scale + delta, minMapScale, maxMapScale);
-        const ratio = nextScale / current.scale;
-        const cursorX = event.clientX - rect.left - rect.width / 2 - current.x;
-        const cursorY = event.clientY - rect.top - rect.height / 2 - current.y;
-
-        return clampMapView({
-          scale: nextScale,
-          x: current.x - cursorX * (ratio - 1),
-          y: current.y - cursorY * (ratio - 1)
-        });
-      });
+      updateMapView((current) => zoomAroundPoint(current, current.scale + delta, event.clientX, event.clientY, rect));
     },
-    [clampMapView]
+    [updateMapView, zoomAroundPoint]
   );
+
+  useEffect(() => {
+    const viewport = mapViewportRef.current;
+    if (!viewport) return;
+    viewport.addEventListener("wheel", handleMapWheel, { passive: false });
+    return () => viewport.removeEventListener("wheel", handleMapWheel);
+  }, [handleMapWheel]);
 
   const handleMapPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const target = event.target;
     if (target instanceof HTMLElement && target.closest("button, input, select, textarea, a")) return;
-    dragRef.current = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-      originX: mapView.x,
-      originY: mapView.y
-    };
+
+    event.preventDefault();
+    const pointer = { id: event.pointerId, x: event.clientX, y: event.clientY };
+    activePointersRef.current.set(event.pointerId, pointer);
     event.currentTarget.setPointerCapture(event.pointerId);
-  }, [mapView.x, mapView.y]);
+
+    const pointers = Array.from(activePointersRef.current.values());
+    if (pointers.length >= 2) {
+      startPinchGesture(pointers, event.currentTarget.getBoundingClientRect());
+    } else {
+      startDragGesture(pointer);
+    }
+  }, [startDragGesture, startPinchGesture]);
 
   const handleMapPointerMove = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
-      const drag = dragRef.current;
-      if (!drag || drag.pointerId !== event.pointerId) return;
-      setMapView(
-        clampMapView({
-          scale: mapView.scale,
-          x: drag.originX + event.clientX - drag.startX,
-          y: drag.originY + event.clientY - drag.startY
-        })
-      );
+      if (!activePointersRef.current.has(event.pointerId)) return;
+      event.preventDefault();
+      activePointersRef.current.set(event.pointerId, { id: event.pointerId, x: event.clientX, y: event.clientY });
+
+      const pointers = Array.from(activePointersRef.current.values());
+      const gesture = gestureRef.current;
+
+      if (pointers.length >= 2) {
+        const rect = event.currentTarget.getBoundingClientRect();
+        if (!gesture || gesture.type !== "pinch") {
+          startPinchGesture(pointers, rect);
+          return;
+        }
+
+        const [first, second] = pointers;
+        if (!first || !second || gesture.startDistance <= 0) return;
+        const distance = pointerDistance(first, second);
+        const center = pointerCenter(first, second);
+        const nextScale = gesture.origin.scale * (distance / gesture.startDistance);
+        const scale = clamp(nextScale, minMapScale, maxMapScale);
+        const ratio = scale / gesture.origin.scale;
+        const centerX = center.x - rect.left - rect.width / 2;
+        const centerY = center.y - rect.top - rect.height / 2;
+
+        updateMapView({
+          scale,
+          x: centerX - (gesture.startCenterX - gesture.origin.x) * ratio,
+          y: centerY - (gesture.startCenterY - gesture.origin.y) * ratio
+        });
+        return;
+      }
+
+      if (!gesture || gesture.type !== "drag" || gesture.pointerId !== event.pointerId) return;
+      updateMapView((current) => ({
+        scale: current.scale,
+        x: gesture.originX + event.clientX - gesture.startX,
+        y: gesture.originY + event.clientY - gesture.startY
+      }));
     },
-    [clampMapView, mapView.scale]
+    [startPinchGesture, updateMapView]
   );
 
   const handleMapPointerEnd = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (dragRef.current?.pointerId !== event.pointerId) return;
-    dragRef.current = null;
+    if (!activePointersRef.current.has(event.pointerId)) return;
+    activePointersRef.current.delete(event.pointerId);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
-  }, []);
+    const pointers = Array.from(activePointersRef.current.values());
+    if (pointers.length >= 2) {
+      startPinchGesture(pointers, event.currentTarget.getBoundingClientRect());
+    } else if (pointers.length === 1 && pointers[0]) {
+      startDragGesture(pointers[0]);
+    } else {
+      gestureRef.current = null;
+    }
+  }, [startDragGesture, startPinchGesture]);
+
+  async function toggleFavoriteVote(clownId: string) {
+    if (voteSubmittingId || voteableClownIds.length === 0) return;
+    const previousSummary = voteSummary;
+    const previousVotedId = previousSummary.voted_clown_id;
+    const nextVotedId = previousVotedId === clownId ? null : clownId;
+    const nextCounts = new Map(previousSummary.items.map((item) => [item.clown_id, item.votes]));
+
+    if (previousVotedId) {
+      nextCounts.set(previousVotedId, Math.max(0, (nextCounts.get(previousVotedId) ?? 0) - 1));
+    }
+    if (nextVotedId) {
+      nextCounts.set(nextVotedId, (nextCounts.get(nextVotedId) ?? 0) + 1);
+    }
+
+    setVoteSubmittingId(clownId);
+    setCommandError(null);
+    setVoteSummary({
+      voted_clown_id: nextVotedId,
+      items: voteableClownIds.map((id) => ({ clown_id: id, votes: nextCounts.get(id) ?? 0 }))
+    });
+
+    try {
+      const summary = await apiFetch<ClownVoteSummary>("/api/park/clown-votes/toggle", {
+        method: "POST",
+        body: JSON.stringify({
+          clown_id: clownId,
+          current_clown_ids: voteableClownIds
+        })
+      });
+      setVoteSummary(summary);
+      setCommandError(null);
+    } catch (err) {
+      setVoteSummary(previousSummary);
+      setCommandError(err instanceof Error ? err.message : "投票同步失败");
+      void refreshVoteSummary();
+    } finally {
+      setVoteSubmittingId(null);
+    }
+  }
 
   function selectEvent(event: SocialEvent) {
     setSelected({ kind: "event", id: event.id });
@@ -345,62 +668,70 @@ export function ParkLive2D() {
     centerMapOn(getEventMapPosition(event, clowns));
   }
 
-  function handleJoin() {
-    const clown = joinPark();
-    setSelected({ kind: "clown", id: clown.id });
-    centerMapOn(clown.mapPoint, 1.82);
-  }
-
-  function handleJoinWave() {
-    const joined = joinWave(12);
-    const first = joined[0];
-    if (first) {
-      setSelected({ kind: "clown", id: first.id });
-      centerMapOn(first.mapPoint, 1.72);
+  async function handleLocateMyJoker() {
+    if (commandLoading) return;
+    setCommandLoading(true);
+    setCommandError(null);
+    try {
+      const { clown } = await ensureSessionJoker();
+      setSelected({ kind: "clown", id: clown.id });
+      centerMapOn(clown.mapPoint, 1.82);
+    } catch (err) {
+      setCommandError(commandErrorMessage(err, sessionJokerPrompt));
+    } finally {
+      setCommandLoading(false);
     }
   }
 
   async function handleDropBalloon(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!activeJoker) {
-      setCommandError("先在灵魂工坊生成你的专属小丑，再投放气球。");
-      return;
-    }
     setCommandLoading(true);
     setCommandError(null);
     try {
+      const { joker } = await ensureSessionJoker();
+      const emoText = balloonText.trim() || mood;
       const balloon = await apiFetch<Balloon>("/api/balloons", {
         method: "POST",
-        body: JSON.stringify({ emo_text: balloonText || mood })
+        body: JSON.stringify({ emo_text: emoText })
       });
       const created = dropBalloon({
-        text: balloonText,
+        text: emoText,
         mood,
         balloon,
-        senderId: activeJoker.id
+        senderId: joker.id
       });
       setBalloonText("");
       setActiveModule("waiting");
       setSelected({ kind: "event", id: created.id });
       centerMapOn(getEventMapPosition(created, clowns));
     } catch (err) {
-      setCommandError(err instanceof Error ? err.message : "投放气球失败");
+      setCommandError(commandErrorMessage(err, "投放气球失败"));
     } finally {
       setCommandLoading(false);
     }
   }
 
-  async function openReplyComposer(eventId?: string, preferredAction: ReplyActionType = "cheer") {
-    if (!activeJoker) {
-      setCommandError("先在灵魂工坊生成你的专属小丑，再接住气球。");
-      return;
-    }
+  async function openReplyComposer(options: ReplyComposerOptions = {}) {
+    const { eventId, preferredAction = "cheer", targetOwnerId, targetClownName } = options;
     setCommandLoading(true);
     setCommandError(null);
     try {
+      const { joker } = await ensureSessionJoker();
+      if (targetOwnerId && isDemoClownId(targetOwnerId)) {
+        setCommandError("Demo 小丑没有真实待接气球，换一个现场小丑试试。");
+        return;
+      }
+      if (targetOwnerId && targetOwnerId === joker.id) {
+        setCommandError("不能接自己的气球，试试选择其他小丑。");
+        return;
+      }
+      const matchRequest: MatchRequest = {
+        action_type: preferredAction,
+        ...(targetOwnerId ? { target_owner_id: targetOwnerId } : {})
+      };
       const match = await apiFetch<MatchResult>("/api/heal/match", {
         method: "POST",
-        body: JSON.stringify({ action_type: preferredAction })
+        body: JSON.stringify(matchRequest)
       });
       const actionType = normalizeReplyAction(match.suggested_action);
       const matchedEvent = ensureMatchedBalloon(match);
@@ -415,14 +746,14 @@ export function ParkLive2D() {
       setSelected({ kind: "event", id: targetEventId });
       centerMapOn(getEventMapPosition(matchedEvent, clowns));
     } catch (err) {
-      setCommandError(err instanceof Error ? err.message : "接住气球失败");
+      setCommandError(commandErrorMessage(err, "接住气球失败", targetClownName));
     } finally {
       setCommandLoading(false);
     }
   }
 
   async function submitReplyComposer() {
-    if (!activeJoker || !replyDraft) return;
+    if (!replyDraft) return;
     const cheerText = replyDraft.cheerText.trim();
     if (!cheerText) {
       setCommandError("先留一句回应，再把气球送回去。");
@@ -431,6 +762,7 @@ export function ParkLive2D() {
     setCommandLoading(true);
     setCommandError(null);
     try {
+      const { joker } = await ensureSessionJoker();
       const action = await apiFetch<HealAction>("/api/heal/actions", {
         method: "POST",
         body: JSON.stringify({
@@ -442,13 +774,13 @@ export function ParkLive2D() {
       const matchedEvent = ensureMatchedBalloon(replyDraft.match);
       replyToEvent({
         eventId: replyDraft.eventId,
-        responderId: activeJoker.id,
+        responderId: joker.id,
         match: replyDraft.match,
         action
       });
       const updatedJoker = {
-        ...activeJoker,
-        energy_score: (activeJoker.energy_score ?? 0) + action.energy_delta_healer
+        ...joker,
+        energy_score: (joker.energy_score ?? 0) + action.energy_delta_healer
       };
       setActiveJoker(updatedJoker);
       saveActiveJoker(updatedJoker);
@@ -457,14 +789,22 @@ export function ParkLive2D() {
       setSelected({ kind: "event", id: replyDraft.eventId });
       centerMapOn(getEventMapPosition(matchedEvent, clowns));
     } catch (err) {
-      setCommandError(err instanceof Error ? err.message : "提交回应失败");
+      setCommandError(commandErrorMessage(err, "提交回应失败"));
     } finally {
       setCommandLoading(false);
     }
   }
 
   function handleReplyWave() {
-    void openReplyComposer(waitingEvent?.id);
+    void openReplyComposer(
+      waitingEvent
+        ? {
+            eventId: waitingEvent.id,
+            targetOwnerId: waitingEvent.from,
+            targetClownName: clownName(waitingEvent.from)
+          }
+        : {}
+    );
   }
 
   function styleForMapPoint(point: ImagePointTuple, clown?: DemoClown): PositionStyle {
@@ -502,8 +842,8 @@ export function ParkLive2D() {
   }
 
   function clownIsFocused(clown: DemoClown) {
+    if (selected.kind === "clown") return selected.id === clown.id;
     return (
-      selected.kind === "clown" && selected.id === clown.id ||
       focusedEvent?.from === clown.id ||
       focusedEvent?.to === clown.id
     );
@@ -561,11 +901,76 @@ export function ParkLive2D() {
             <p>不是静态地图，也不是 3D 形象秀。核心是让现场小丑投放气球，由其他小丑接力回应，持续产生可回放事件。</p>
           </div>
 
+          <section className="park-favorite-board" aria-label="小丑喜爱排行榜">
+            <div className="park-favorite-board__header">
+              <div>
+                <span className="pixel-kicker">FAVORITES</span>
+                <h2>小丑人气榜</h2>
+                <p>口头禅来自灵魂草案 / 入园档案；每人只能投一票，点一下投票，再点一下取消。</p>
+              </div>
+              <Trophy color="var(--color-coin)" aria-hidden />
+            </div>
+
+            <div className="park-favorite-list" data-empty={rankedClowns.length === 0}>
+              {rankedClowns.length === 0 ? (
+                <div className="park-event-empty">还没有用户小丑入园。从灵魂工坊生成小丑，或扫码恢复入园后，这里会实时开榜。</div>
+              ) : (
+                rankedClowns.map(({ clown, votes }, index) => {
+                  const isWinner = index === 0;
+                  const voted = voteSummary.voted_clown_id === clown.id;
+                  return (
+                    <article
+                      className="park-favorite-row"
+                      data-winner={isWinner}
+                      data-voted={voted}
+                      key={clown.id}
+                    >
+                      <div className="park-favorite-row__sprite" aria-hidden>
+                        <ClownSprite
+                          spriteUrl={clown.spriteUrl}
+                          previewUrl={clown.image}
+                          frameSize={clown.frameSize}
+                          actions={clown.spriteActions}
+                          action={isWinner ? "special" : "walk-front"}
+                          size={62}
+                          label={clown.name}
+                          fallback={(
+                            <span className="park-clown-sprite" aria-hidden>
+                              <i className="park-clown-sprite__hat" />
+                              <i className="park-clown-sprite__head" />
+                              <i className="park-clown-sprite__body" />
+                            </span>
+                          )}
+                        />
+                      </div>
+                      <strong className="park-favorite-row__name">
+                        {isWinner ? "最喜爱小丑 · " : `NO.${index + 1} · `}
+                        {clown.name}
+                      </strong>
+                      <p className="park-favorite-row__catchphrase">“{clown.catchphrase ?? clown.line}”</p>
+                      <button
+                        type="button"
+                        className="park-favorite-row__vote"
+                        data-voted={voted}
+                        aria-pressed={voted}
+                        disabled={voteSubmittingId !== null}
+                        onClick={() => void toggleFavoriteVote(clown.id)}
+                      >
+                        <Heart size={15} aria-hidden />
+                        <span>{voted ? "取消" : "投票"}</span>
+                        <strong>{votes}</strong>
+                      </button>
+                    </article>
+                  );
+                })
+              )}
+            </div>
+          </section>
+
           <div
             ref={mapViewportRef}
             className="park-map2d"
             aria-label="两江校区可缩放直播地图"
-            onWheel={handleMapWheel}
             onPointerDown={handleMapPointerDown}
             onPointerMove={handleMapPointerMove}
             onPointerUp={handleMapPointerEnd}
@@ -644,6 +1049,7 @@ export function ParkLive2D() {
                       action={clownIsFocused(clown) ? "special" : "idle"}
                       size={52}
                       label={clown.name}
+                      className={clown.id.startsWith("demo-clown-") ? "clown-sprite--smooth" : ""}
                     />
                   ) : clown.image ? (
                     <img src={clown.image} alt="" />
@@ -672,10 +1078,27 @@ export function ParkLive2D() {
             </div>
 
             <div className="park-map2d__focus" aria-live="polite">
-              <small>{focusedEvent ? eventMeta(focusedEvent) : "两江校区"}</small>
-              <strong>{focusedEvent?.title ?? "等待第一场互动"}</strong>
-              <span>{focusedEvent?.summary ?? "加入游园或投放情绪气球后，这里会同步高亮。"}</span>
-              {focusedEventPoi ? <em>{focusedEventPoi.note}</em> : null}
+              {focusedClown ? (
+                <>
+                  <small>{focusedClown.energy} · {focusedClown.role}</small>
+                  <strong>{focusedClown.name}</strong>
+                  <span>{focusedClown.line}</span>
+                  <em>{focusedClown.action}</em>
+                </>
+              ) : focusedPoi ? (
+                <>
+                  <small>两江校区</small>
+                  <strong>{focusedPoi.label}</strong>
+                  <span>{focusedPoi.note}</span>
+                </>
+              ) : (
+                <>
+                  <small>{focusedEvent ? eventMeta(focusedEvent) : "两江校区"}</small>
+                  <strong>{focusedEvent?.title ?? "等待第一场互动"}</strong>
+                  <span>{focusedEvent?.summary ?? "加入游园或投放情绪气球后，这里会同步高亮。"}</span>
+                  {focusedEventPoi ? <em>{focusedEventPoi.note}</em> : null}
+                </>
+              )}
             </div>
           </div>
         </section>
@@ -689,13 +1112,9 @@ export function ParkLive2D() {
               </div>
             </div>
 
-            <button type="button" className="primary-button" onClick={handleJoin}>
-              <UserPlus size={17} aria-hidden />
-              加入游园
-            </button>
-            <button type="button" className="secondary-button park-wave-button" onClick={handleJoinWave}>
-              <Users size={17} aria-hidden />
-              模拟 12 人入园
+            <button type="button" className="primary-button" disabled={commandLoading} onClick={() => void handleLocateMyJoker()}>
+              <MapPin size={17} aria-hidden />
+              定位我的小丑
             </button>
 
             <form className="park-balloon-form" onSubmit={handleDropBalloon}>
@@ -718,17 +1137,17 @@ export function ParkLive2D() {
                   placeholder="今天想轻轻打个招呼"
                 />
               </label>
-              <button type="submit" className="secondary-button" disabled={commandLoading}>
+              <button type="submit" className="secondary-button" disabled={!activeJoker || commandLoading}>
                 <Send size={16} aria-hidden />
                 {commandLoading ? "处理中" : "投放气球"}
               </button>
             </form>
 
-            <button type="button" className="park-reply-button" disabled={commandLoading} onClick={() => void openReplyComposer(waitingEvent?.id)}>
+            <button type="button" className="park-reply-button" disabled={!activeJoker || commandLoading} onClick={() => void openReplyComposer({ eventId: waitingEvent?.id })}>
               <Reply size={16} aria-hidden />
               {waitingEvent ? "接住一个气球" : "匹配一个气球"}
             </button>
-            <button type="button" className="park-reply-button park-reply-button--batch" disabled={waitingCount === 0 || commandLoading} onClick={handleReplyWave}>
+            <button type="button" className="park-reply-button park-reply-button--batch" disabled={!activeJoker || waitingCount === 0 || commandLoading} onClick={handleReplyWave}>
               <Sparkles size={16} aria-hidden />
               {waitingCount > 0 ? "接力一个等待" : "等待气球为 0"}
             </button>
@@ -773,7 +1192,18 @@ export function ParkLive2D() {
                       <small>{event.summary}</small>
                     </button>
                     {event.status === "waiting" ? (
-                      <button type="button" className="park-event-row2d__reply" disabled={commandLoading} onClick={() => void openReplyComposer(event.id)}>
+                      <button
+                        type="button"
+                        className="park-event-row2d__reply"
+                        disabled={commandLoading}
+                        onClick={() =>
+                          void openReplyComposer({
+                            eventId: event.id,
+                            targetOwnerId: event.from,
+                            targetClownName: clownName(event.from)
+                          })
+                        }
+                      >
                         接住
                       </button>
                     ) : null}
@@ -840,6 +1270,30 @@ export function ParkLive2D() {
                 <span>{focusedClown.energy} · {focusedClown.role}</span>
                 <strong>{focusedClown.name}</strong>
                 <p>{focusedClown.line}</p>
+                <div className="park-focus-card__actions">
+                  {!activeJoker ? (
+                    <small>先定位我的小丑，再接其他小丑的气球。</small>
+                  ) : focusedClownIsDemo ? (
+                    <small>Demo 小丑没有真实待接气球，换一个现场小丑试试。</small>
+                  ) : focusedClownIsSelf ? (
+                    <small>这是你自己的小丑，不能接自己的气球。</small>
+                  ) : (
+                    <button
+                      type="button"
+                      className="park-focus-card__reply"
+                      disabled={!canReplyToFocusedClown || commandLoading}
+                      onClick={() =>
+                        void openReplyComposer({
+                          targetOwnerId: focusedClown.id,
+                          targetClownName: focusedClown.name
+                        })
+                      }
+                    >
+                      <Reply size={15} aria-hidden />
+                      接这个小丑的气球
+                    </button>
+                  )}
+                </div>
               </div>
             ) : null}
 
@@ -922,7 +1376,7 @@ export function ParkLive2D() {
 
             <div className="park-reply-modal__footer">
               <span>回应者能量 +1 · 对方能量 +2 · 亲密度 +3</span>
-              <button className="primary-button" type="button" disabled={commandLoading || replyDraft.cheerText.trim().length === 0} onClick={() => void submitReplyComposer()}>
+              <button className="primary-button" type="button" disabled={!activeJoker || commandLoading || replyDraft.cheerText.trim().length === 0} onClick={() => void submitReplyComposer()}>
                 <Send size={16} aria-hidden />
                 送出回应
               </button>
