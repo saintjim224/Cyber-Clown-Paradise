@@ -72,6 +72,9 @@ export default async function ReplayPage({ params }: { params: Promise<{ token: 
             ))}
           </div>
           <div className="task-actions">
+            <a className="primary-button" href={`/park/join/${token}`}>
+              进入小丑乐园
+            </a>
             <span className="status-pill">
               <Clock size={16} aria-hidden />
               deterministic replay
@@ -82,7 +85,7 @@ export default async function ReplayPage({ params }: { params: Promise<{ token: 
             </span>
           </div>
           <div style={{ marginTop: 16 }}>
-            <QRCodeBox value={`/replay/${token}`} />
+            <QRCodeBox value={`/park/join/${token}`} />
           </div>
         </section>
         <ParkExperiencePanel joker={replay.joker} events={replay.events} />

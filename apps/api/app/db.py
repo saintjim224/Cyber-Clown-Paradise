@@ -39,6 +39,7 @@ def _ensure_compatible_columns(sync_conn) -> None:
     json_type = _json_column_type(dialect_name)
     additions = {
         "joker_profiles": {
+            "owner_session_id": "VARCHAR(64)",
             "soul_seed": "TEXT",
             "soul_profile": json_type,
             "avatar_recipe": json_type,
@@ -59,3 +60,22 @@ def _ensure_compatible_columns(sync_conn) -> None:
             if column_name in existing:
                 continue
             sync_conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"))
+    _ensure_index(sync_conn, inspector, "joker_profiles", "ix_joker_profiles_owner_session_id", "owner_session_id")
+    _ensure_index(
+        sync_conn,
+        inspector,
+        "joker_profiles",
+        "ux_joker_profiles_owner_session_id",
+        "owner_session_id",
+        unique=True,
+    )
+
+
+def _ensure_index(sync_conn, inspector, table_name: str, index_name: str, column_name: str, unique: bool = False) -> None:
+    if not inspector.has_table(table_name):
+        return
+    existing = {index["name"] for index in inspector.get_indexes(table_name)}
+    if index_name in existing:
+        return
+    uniqueness = "UNIQUE " if unique else ""
+    sync_conn.execute(text(f"CREATE {uniqueness}INDEX {index_name} ON {table_name} ({column_name})"))

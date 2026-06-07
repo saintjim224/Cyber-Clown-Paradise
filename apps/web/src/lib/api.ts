@@ -1,4 +1,5 @@
 export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
+const SITE_ORIGIN = process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/$/, "");
 
 export type StyleTokens = {
   palette: { primary: string; secondary: string; accent: string };
@@ -130,9 +131,16 @@ export type Replay = {
   share_text: string;
 };
 
+function currentSiteOrigin() {
+  if (SITE_ORIGIN) return SITE_ORIGIN;
+  if (typeof window !== "undefined") return window.location.origin;
+  return "";
+}
+
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
+    credentials: "include",
     headers: {
       "content-type": "application/json",
       ...init?.headers
@@ -147,8 +155,13 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
 }
 
 export function replayUrl(token: string) {
-  if (typeof window === "undefined") {
-    return `/replay/${token}`;
-  }
-  return `${window.location.origin}/replay/${token}`;
+  const path = `/replay/${token}`;
+  const origin = currentSiteOrigin();
+  return origin ? `${origin}${path}` : path;
+}
+
+export function parkEntryUrl(token: string) {
+  const path = `/park/join/${token}`;
+  const origin = currentSiteOrigin();
+  return origin ? `${origin}${path}` : path;
 }

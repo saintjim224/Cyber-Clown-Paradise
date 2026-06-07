@@ -100,7 +100,7 @@ export function IdentityWorkshop({
           <input type="checkbox" checked={consentMedia} onChange={(event) => onConsentMediaChange(event.target.checked)} />
           同意保存我确认后的小丑形象资产，不保存原始自拍或视频。
         </label>
-        <button className="primary-button" disabled={loading || soulSeed.trim().length < 4} type="submit">
+        <button className="primary-button" disabled={loading || !soulSeed.trim()} type="submit">
           <WandSparkles size={18} aria-hidden />
           {loading ? "生成中" : "生成灵魂草案"}
         </button>

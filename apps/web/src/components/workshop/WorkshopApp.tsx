@@ -10,7 +10,7 @@ import { SoulDraftEditor } from "@/components/home/SoulDraftEditor";
 import { ClownRevealModal } from "@/components/workshop/ClownRevealModal";
 import {
   apiFetch,
-  replayUrl,
+  parkEntryUrl,
   type Balloon,
   type FaceDescriptor,
   type HealAction,
@@ -49,7 +49,7 @@ export function WorkshopApp() {
   const [showDraftModal, setShowDraftModal] = useState(false);
   const [showClownReveal, setShowClownReveal] = useState(false);
 
-  const qrValue = useMemo(() => (joker ? replayUrl(joker.qr_token) : ""), [joker]);
+  const qrValue = useMemo(() => (joker ? parkEntryUrl(joker.qr_token) : ""), [joker]);
   const faceQuality = faceDescriptor?.capture_quality ?? "fallback";
 
   function updateSoul<K extends keyof SoulProfile>(field: K, value: SoulProfile[K]) {
@@ -58,8 +58,8 @@ export function WorkshopApp() {
 
   async function generateDraft(event?: FormEvent) {
     event?.preventDefault();
-    if (soulSeed.trim().length < 4) {
-      setError("先给小丑一点灵魂材料，至少写 4 个字。");
+    if (!soulSeed.trim()) {
+      setError("先给小丑一点灵魂材料。");
       return;
     }
     setLoading(true);
@@ -143,7 +143,7 @@ export function WorkshopApp() {
     try {
       const created = await apiFetch<Balloon>("/api/balloons", {
         method: "POST",
-        body: JSON.stringify({ joker_id: joker.id, emo_text: balloonText })
+        body: JSON.stringify({ emo_text: balloonText })
       });
       setBalloon(created);
       setStep("replay");
@@ -161,12 +161,12 @@ export function WorkshopApp() {
     try {
       const found = await apiFetch<MatchResult>("/api/heal/match", {
         method: "POST",
-        body: JSON.stringify({ healer_id: joker.id, action_type: actionType })
+        body: JSON.stringify({ action_type: actionType })
       });
       setMatch(found);
       setCheerText(actionType === "hug" ? "抱一下，坏运气直接掉线。" : "摸摸头，今天先把电量充到 61%。");
     } catch {
-      setError("现在还没有待治愈气球，可以先创建一个 I 人小丑寄存烦恼。");
+      setError("现在还没有可接力气球，可以先让其他小丑投放一颗。");
     } finally {
       setLoading(false);
     }
@@ -180,7 +180,6 @@ export function WorkshopApp() {
       const created = await apiFetch<HealAction>("/api/heal/actions", {
         method: "POST",
         body: JSON.stringify({
-          healer_id: joker.id,
           balloon_id: match.balloon_id,
           action_type: match.suggested_action,
           cheer_text: cheerText
@@ -267,8 +266,8 @@ export function WorkshopApp() {
           {step === "replay" && joker ? (
             <div className="task-panel">
               <span className="pixel-kicker">REPLAY</span>
-              <h3>扫码回访</h3>
-              <p className="helper">离开展台后扫码，可以看到你的小丑在校园地图里替你社交的回放。</p>
+              <h3>私密入园码</h3>
+              <p className="helper">离开展台后扫码，直接进入小丑乐园投放气球，也可以查看这只小丑的行为回放。</p>
               <a className="secondary-button" href={`/replay/${joker.qr_token}`}>打开回放页</a>
             </div>
           ) : null}
@@ -295,7 +294,7 @@ export function WorkshopApp() {
             </a>
             <a className="module-sign module-sign--replay" href={joker ? `/replay/${joker.qr_token}` : "/replay/demo"}>
               <span>回放入口</span>
-              <strong>{joker ? "打开你的二维码回访页" : "创建小丑后生成专属回放"}</strong>
+              <strong>{joker ? "查看你的专属行为回放" : "创建小丑后生成专属回放"}</strong>
             </a>
           </div>
         </aside>

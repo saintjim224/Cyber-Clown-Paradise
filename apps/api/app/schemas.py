@@ -108,7 +108,6 @@ class JokerOut(BaseModel):
 
 
 class BalloonCreate(BaseModel):
-    joker_id: str
     emo_text: str = Field(min_length=2, max_length=500)
 
 
@@ -124,7 +123,6 @@ class BalloonOut(BaseModel):
 
 
 class MatchRequest(BaseModel):
-    healer_id: str
     action_type: str = Field(default="hug", pattern="^(hug|pet|cheer|dance)$")
 
 
@@ -138,7 +136,6 @@ class MatchOut(BaseModel):
 
 
 class HealActionCreate(BaseModel):
-    healer_id: str
     balloon_id: str
     action_type: str = Field(pattern="^(hug|pet|cheer|dance)$")
     cheer_text: str = Field(min_length=1, max_length=120)

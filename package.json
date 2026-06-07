@@ -14,8 +14,8 @@
     "build": "npm run build -w apps/web",
     "typecheck": "npm run typecheck -w apps/web && npm run typecheck -w packages/shared",
     "test": "npm run test -w packages/shared && pytest apps/api/tests",
-    "api": "uvicorn app.main:app --reload --app-dir apps/api",
-    "worker": "python -m app.worker",
+    "api": "node scripts/run-with-log.mjs api api.8000 -- uvicorn app.main:app --reload --app-dir apps/api --port 8000",
+    "worker": "node scripts/run-with-log.mjs worker worker -- python -m app.worker",
     "docker:up": "docker compose -f infra/docker-compose.yml up --build",
     "docker:down": "docker compose -f infra/docker-compose.yml down"
   },

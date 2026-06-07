@@ -5,7 +5,8 @@ import { useEffect, useMemo, useState } from "react";
 import { Activity, CheckCircle, Clock, History, MapPin, Radio, Reply, Send, Sparkles, UserPlus, Users } from "lucide-react";
 import { ClownSprite } from "@/components/pixel/ClownSprite";
 import { useLiveSocialEvents } from "@/hooks/useLiveSocialEvents";
-import { loadActiveJoker } from "@/lib/clownAssets";
+import { loadActiveJoker, saveActiveJoker } from "@/lib/clownAssets";
+import { apiFetch, type Balloon, type HealAction, type Joker, type MatchResult } from "@/lib/api";
 import {
   eventStatusText,
   eventTypeText,
@@ -95,17 +96,41 @@ function isRecent(event: SocialEvent) {
 }
 
 export function ParkLive2D() {
-  const { clowns, events, activeEvent, joinPark, joinWave, dropBalloon, replyToEvent, replyWaitingBalloons, focusEvent, addJokerToPark } = useLiveSocialEvents();
+  const { clowns, events, activeEvent, joinPark, joinWave, dropBalloon, ensureMatchedBalloon, replyToEvent, focusEvent, addJokerToPark } = useLiveSocialEvents();
   const [selected, setSelected] = useState<Selection>({ kind: "event", id: activeEvent?.id ?? events[0]?.id ?? "" });
   const [activeModule, setActiveModule] = useState<SocialEvent["status"]>("live");
   const [balloonText, setBalloonText] = useState("");
   const [mood, setMood] = useState(moodOptions[0]);
+  const [activeJoker, setActiveJoker] = useState<Joker | null>(null);
+  const [commandLoading, setCommandLoading] = useState(false);
+  const [commandError, setCommandError] = useState<string | null>(null);
 
   useEffect(() => {
-    const activeJoker = loadActiveJoker();
-    if (!activeJoker) return;
-    const clown = addJokerToPark(activeJoker);
-    setSelected({ kind: "clown", id: clown.id });
+    let cancelled = false;
+
+    function activateJoker(joker: Joker) {
+      setActiveJoker(joker);
+      const clown = addJokerToPark(joker);
+      setSelected({ kind: "clown", id: clown.id });
+    }
+
+    async function loadSessionJoker() {
+      try {
+        const sessionJoker = await apiFetch<Joker>("/api/jokers/me");
+        if (cancelled) return;
+        saveActiveJoker(sessionJoker);
+        activateJoker(sessionJoker);
+      } catch {
+        const storedJoker = loadActiveJoker();
+        if (!cancelled && storedJoker) activateJoker(storedJoker);
+      }
+    }
+
+    void loadSessionJoker();
+
+    return () => {
+      cancelled = true;
+    };
   }, [addJokerToPark]);
 
   const bounds = useMemo(() => {
@@ -156,26 +181,74 @@ export function ParkLive2D() {
     if (first) setSelected({ kind: "clown", id: first.id });
   }
 
-  function handleDropBalloon(event: FormEvent<HTMLFormElement>) {
+  async function handleDropBalloon(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const created = dropBalloon({
-      text: balloonText,
-      mood
-    });
-    setBalloonText("");
-    setActiveModule("waiting");
-    setSelected({ kind: "event", id: created.id });
+    if (!activeJoker) {
+      setCommandError("先在灵魂工坊生成你的专属小丑，再投放气球。");
+      return;
+    }
+    setCommandLoading(true);
+    setCommandError(null);
+    try {
+      const balloon = await apiFetch<Balloon>("/api/balloons", {
+        method: "POST",
+        body: JSON.stringify({ emo_text: balloonText || mood })
+      });
+      const created = dropBalloon({
+        text: balloonText,
+        mood,
+        balloon,
+        senderId: activeJoker.id
+      });
+      setBalloonText("");
+      setActiveModule("waiting");
+      setSelected({ kind: "event", id: created.id });
+    } catch (err) {
+      setCommandError(err instanceof Error ? err.message : "投放气球失败");
+    } finally {
+      setCommandLoading(false);
+    }
   }
 
-  function handleReply(eventId: string) {
-    replyToEvent(eventId);
-    setActiveModule("done");
-    setSelected({ kind: "event", id: eventId });
+  async function handleReply(eventId?: string) {
+    if (!activeJoker) {
+      setCommandError("先在灵魂工坊生成你的专属小丑，再接住气球。");
+      return;
+    }
+    setCommandLoading(true);
+    setCommandError(null);
+    try {
+      const match = await apiFetch<MatchResult>("/api/heal/match", {
+        method: "POST",
+        body: JSON.stringify({ action_type: "cheer" })
+      });
+      const action = await apiFetch<HealAction>("/api/heal/actions", {
+        method: "POST",
+        body: JSON.stringify({
+          balloon_id: match.balloon_id,
+          action_type: match.suggested_action,
+          cheer_text: "接住了，这颗气球有人回应。"
+        })
+      });
+      ensureMatchedBalloon(match);
+      const targetEventId = eventId && eventId === match.balloon_id ? eventId : match.balloon_id;
+      replyToEvent({
+        eventId: targetEventId,
+        responderId: activeJoker.id,
+        match,
+        action
+      });
+      setActiveModule("done");
+      setSelected({ kind: "event", id: targetEventId });
+    } catch (err) {
+      setCommandError(err instanceof Error ? err.message : "接住气球失败");
+    } finally {
+      setCommandLoading(false);
+    }
   }
 
   function handleReplyWave() {
-    replyWaitingBalloons();
-    setActiveModule("done");
+    void handleReply();
   }
 
   function styleForPosition(position: LngLatTuple, clown?: DemoClown): PositionStyle {
@@ -256,7 +329,7 @@ export function ParkLive2D() {
               <span>确认方向</span>
               <strong>现场多人小丑替身社交</strong>
             </div>
-            <p>不是静态地图，也不是 3D 形象秀。核心是让 I 人投放气球，让 E 人和其他小丑接力回应，现场持续产生可回放事件。</p>
+            <p>不是静态地图，也不是 3D 形象秀。核心是让现场小丑投放气球，由其他小丑接力回应，持续产生可回放事件。</p>
           </div>
 
           <div className="park-map2d" aria-label="两江校区二维 overlay">
@@ -378,20 +451,21 @@ export function ParkLive2D() {
                   placeholder="今天想轻轻打个招呼"
                 />
               </label>
-              <button type="submit" className="secondary-button">
+              <button type="submit" className="secondary-button" disabled={commandLoading}>
                 <Send size={16} aria-hidden />
-                投放气球
+                {commandLoading ? "处理中" : "投放气球"}
               </button>
             </form>
 
-            <button type="button" className="park-reply-button" disabled={!waitingEvent} onClick={() => waitingEvent && handleReply(waitingEvent.id)}>
+            <button type="button" className="park-reply-button" disabled={!waitingEvent || commandLoading} onClick={() => waitingEvent && void handleReply(waitingEvent.id)}>
               <Reply size={16} aria-hidden />
               {waitingEvent ? "接住一个气球" : "暂无等待气球"}
             </button>
-            <button type="button" className="park-reply-button park-reply-button--batch" disabled={waitingCount === 0} onClick={handleReplyWave}>
+            <button type="button" className="park-reply-button park-reply-button--batch" disabled={waitingCount === 0 || commandLoading} onClick={handleReplyWave}>
               <Sparkles size={16} aria-hidden />
-              {waitingCount > 0 ? "接力全部等待" : "等待气球为 0"}
+              {waitingCount > 0 ? "接力一个等待" : "等待气球为 0"}
             </button>
+            {commandError ? <p className="error">{commandError}</p> : null}
           </section>
 
           <section className="pixel-panel park-event-panel">
@@ -432,7 +506,7 @@ export function ParkLive2D() {
                       <small>{event.summary}</small>
                     </button>
                     {event.status === "waiting" ? (
-                      <button type="button" className="park-event-row2d__reply" onClick={() => handleReply(event.id)}>
+                      <button type="button" className="park-event-row2d__reply" onClick={() => void handleReply(event.id)}>
                         接住
                       </button>
                     ) : null}

@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.mutable import MutableDict, MutableList
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -29,10 +29,22 @@ class TimestampMixin:
     )
 
 
+class UserSession(Base, TimestampMixin):
+    __tablename__ = "user_sessions"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+    joker: Mapped["JokerProfile | None"] = relationship(back_populates="owner_session")
+
+
 class JokerProfile(Base, TimestampMixin):
     __tablename__ = "joker_profiles"
+    __table_args__ = (Index("ux_joker_profiles_owner_session_id", "owner_session_id", unique=True),)
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("jkr"))
+    owner_session_id: Mapped[str | None] = mapped_column(
+        ForeignKey("user_sessions.id"), nullable=True, index=True
+    )
     nickname: Mapped[str | None] = mapped_column(String(32), nullable=True)
     mbti: Mapped[str] = mapped_column(String(4), index=True)
     constellation: Mapped[str] = mapped_column(String(16), index=True)
@@ -49,6 +61,7 @@ class JokerProfile(Base, TimestampMixin):
     face_descriptor: Mapped[dict | None] = mapped_column(MutableDict.as_mutable(json_type()), nullable=True)
     avatar_status: Mapped[str] = mapped_column(String(24), default="recipe_ready")
 
+    owner_session: Mapped[UserSession | None] = relationship(back_populates="joker")
     balloons: Mapped[list["EmoBalloon"]] = relationship(
         back_populates="owner",
         foreign_keys="EmoBalloon.owner_id",

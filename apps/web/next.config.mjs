@@ -13,7 +13,8 @@ const nextConfig = {
   env: {
     NEXT_PUBLIC_AMAP_JSAPI_KEY: process.env.NEXT_PUBLIC_AMAP_JSAPI_KEY ?? "",
     NEXT_PUBLIC_AMAP_SECURITY_JS_CODE: process.env.NEXT_PUBLIC_AMAP_SECURITY_JS_CODE ?? "",
-    NEXT_PUBLIC_API_BASE: process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000"
+    NEXT_PUBLIC_API_BASE: process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000",
+    NEXT_PUBLIC_SITE_URL: process.env.NEXT_PUBLIC_SITE_URL ?? ""
   },
   eslint: {
     ignoreDuringBuilds: true

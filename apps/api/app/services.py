@@ -2,7 +2,7 @@ import math
 import secrets
 from datetime import datetime, timezone
 
-from sqlalchemy import Select, desc, select
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai_adapter import JokerAIAdapter
@@ -39,6 +39,22 @@ class JokerService:
         self.session = session
         self.ai = JokerAIAdapter(settings)
 
+    async def current_joker(self, owner_session_id: str) -> JokerProfile:
+        result = await self.session.execute(
+            select(JokerProfile).where(JokerProfile.owner_session_id == owner_session_id)
+        )
+        joker = result.scalar_one_or_none()
+        if not joker:
+            raise ValueError("no_active_joker")
+        return joker
+
+    async def enter_with_token(self, token: str) -> JokerProfile:
+        result = await self.session.execute(select(JokerProfile).where(JokerProfile.qr_token == token))
+        joker = result.scalar_one_or_none()
+        if not joker or not joker.owner_session_id:
+            raise ValueError("token_not_found")
+        return joker
+
     async def create_draft(self, payload: JokerDraftCreate) -> JokerDraftOut:
         moderation = moderate_text(payload.soul_seed)
         self.session.add(
@@ -63,7 +79,11 @@ class JokerService:
         await self.session.commit()
         return JokerDraftOut.model_validate(generated)
 
-    async def create_joker(self, payload: JokerCreate) -> JokerProfile:
+    async def create_joker(self, payload: JokerCreate, owner_session_id: str) -> JokerProfile:
+        result = await self.session.execute(
+            select(JokerProfile).where(JokerProfile.owner_session_id == owner_session_id)
+        )
+        joker = result.scalar_one_or_none()
         face_descriptor = payload.face_descriptor.model_dump() if payload.face_descriptor else None
         if payload.soul_profile and payload.avatar_recipe:
             generated = {
@@ -89,26 +109,34 @@ class JokerService:
                 seed,
                 face_descriptor,
             )
-        joker = JokerProfile(
-            nickname=payload.nickname,
-            mbti=payload.mbti.upper(),
-            constellation=payload.constellation,
-            social_energy=payload.social_energy,
-            consent_media=payload.consent_media,
-            persona=generated["persona"],
-            verdict=generated["verdict"],
-            style_tokens=generated["style_tokens"],
-            soul_seed=payload.soul_seed,
-            soul_profile=generated.get("soul_profile"),
-            avatar_recipe=generated.get("avatar_recipe"),
-            face_descriptor=face_descriptor,
-            avatar_status="recipe_ready",
-            qr_token=secrets.token_urlsafe(18),
-            embedding=_simple_embedding(
+        values = {
+            "nickname": payload.nickname,
+            "mbti": payload.mbti.upper(),
+            "constellation": payload.constellation,
+            "social_energy": payload.social_energy,
+            "consent_media": payload.consent_media,
+            "persona": generated["persona"],
+            "verdict": generated["verdict"],
+            "style_tokens": generated["style_tokens"],
+            "soul_seed": payload.soul_seed,
+            "soul_profile": generated.get("soul_profile"),
+            "avatar_recipe": generated.get("avatar_recipe"),
+            "face_descriptor": face_descriptor,
+            "avatar_status": "recipe_ready",
+            "embedding": _simple_embedding(
                 f"{payload.mbti} {payload.constellation} {generated['persona']} {payload.soul_seed or ''}"
             ),
-        )
-        self.session.add(joker)
+        }
+        if joker:
+            for field, value in values.items():
+                setattr(joker, field, value)
+        else:
+            joker = JokerProfile(
+                owner_session_id=owner_session_id,
+                qr_token=secrets.token_urlsafe(18),
+                **values,
+            )
+            self.session.add(joker)
         await self.session.commit()
         await self.session.refresh(joker)
         return joker
@@ -118,11 +146,21 @@ class BalloonService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def create_balloon(self, payload: BalloonCreate) -> EmoBalloon:
+    async def _current_joker(self, owner_session_id: str) -> JokerProfile:
+        result = await self.session.execute(
+            select(JokerProfile).where(JokerProfile.owner_session_id == owner_session_id)
+        )
+        joker = result.scalar_one_or_none()
+        if not joker:
+            raise ValueError("no_active_joker")
+        return joker
+
+    async def create_balloon(self, payload: BalloonCreate, owner_session_id: str) -> EmoBalloon:
+        joker = await self._current_joker(owner_session_id)
         moderation = moderate_text(payload.emo_text)
         self.session.add(
             ModerationLog(
-                joker_id=payload.joker_id,
+                joker_id=joker.id,
                 input_kind="balloon",
                 flagged=moderation.flagged,
                 categories=moderation.categories,
@@ -136,7 +174,7 @@ class BalloonService:
             safe_summary = moderation.cleaned_text[:120]
             status = "pending"
         balloon = EmoBalloon(
-            owner_id=payload.joker_id,
+            owner_id=joker.id,
             emo_text=payload.emo_text,
             safe_summary=safe_summary,
             status=status,
@@ -154,14 +192,24 @@ class HealService:
         self.session = session
         self.ai = JokerAIAdapter(settings)
 
-    async def find_match(self, healer_id: str, action_type: str) -> MatchOut:
-        healer = await self.session.get(JokerProfile, healer_id)
+    async def _current_joker(self, owner_session_id: str) -> JokerProfile:
+        result = await self.session.execute(
+            select(JokerProfile).where(JokerProfile.owner_session_id == owner_session_id)
+        )
+        joker = result.scalar_one_or_none()
+        if not joker:
+            raise ValueError("no_active_joker")
+        return joker
+
+    async def find_match(self, owner_session_id: str, action_type: str) -> MatchOut:
+        healer = await self._current_joker(owner_session_id)
         if not healer:
             raise ValueError("healer_not_found")
         result = await self.session.execute(
             select(EmoBalloon, JokerProfile)
             .join(JokerProfile, EmoBalloon.owner_id == JokerProfile.id)
             .where(EmoBalloon.status == "pending")
+            .where(EmoBalloon.owner_id != healer.id)
             .order_by(EmoBalloon.created_at)
         )
         candidates = result.all()
@@ -193,12 +241,34 @@ class HealService:
             prompt=f"对着镜头做一个 {action_type}，再留一句不超过 40 字的转运话。",
         )
 
-    async def submit_action(self, payload: HealActionCreate) -> HealAction:
-        match = await self.find_match(payload.healer_id, payload.action_type)
+    async def submit_action(self, payload: HealActionCreate, owner_session_id: str) -> HealAction:
+        healer = await self._current_joker(owner_session_id)
+        balloon = await self.session.get(EmoBalloon, payload.balloon_id)
+        if not balloon or balloon.status != "pending":
+            raise ValueError("balloon_not_found")
+        if balloon.owner_id == healer.id:
+            raise ValueError("cannot_heal_own_balloon")
+        match = await self.find_match(owner_session_id, payload.action_type)
+        if match.balloon_id != payload.balloon_id:
+            owner = await self.session.get(JokerProfile, balloon.owner_id)
+            if not owner:
+                raise ValueError("balloon_owner_not_found")
+            semantic = _cosine(healer.embedding, balloon.embedding)
+            energy_bonus = 0.22 if healer.social_energy == "E" and owner.social_energy == "I" else 0.08
+            mbti_bonus = 0.15 if healer.mbti[0] != owner.mbti[0] else 0.04
+            constellation_bonus = 0.08 if healer.constellation != owner.constellation else 0.03
+            score = round(semantic * 0.55 + energy_bonus + mbti_bonus + constellation_bonus, 4)
+            reason = (
+                f"{healer.mbti}/{healer.constellation} 和 "
+                f"{owner.mbti}/{owner.constellation} 有互补张力，适合用 {payload.action_type} 把低电量拉起来。"
+            )
+        else:
+            score = match.score
+            reason = match.reason
         moderation = moderate_text(payload.cheer_text)
         self.session.add(
             ModerationLog(
-                joker_id=payload.healer_id,
+                joker_id=healer.id,
                 input_kind="heal_action",
                 flagged=moderation.flagged,
                 categories=moderation.categories,
@@ -209,24 +279,22 @@ class HealService:
         if moderation.action_taken == "block":
             cheer = "这句先交给安全员看一眼，小丑已经把善意保留下来了。"
         action = HealAction(
-            healer_id=payload.healer_id,
+            healer_id=healer.id,
             balloon_id=payload.balloon_id,
             action_type=payload.action_type,
             cheer_text=cheer,
-            match_score=match.score,
-            match_reason=match.reason,
+            match_score=score,
+            match_reason=reason,
             media_asset_id=payload.media_asset_id,
         )
-        balloon = await self.session.get(EmoBalloon, payload.balloon_id)
-        if balloon:
-            balloon.status = "healed"
-            balloon.healed_by_id = payload.healer_id
-        event = await self.ai.generate_event(payload.healer_id, balloon.safe_summary if balloon else "", payload.action_type)
+        balloon.status = "healed"
+        balloon.healed_by_id = healer.id
+        event = await self.ai.generate_event(healer.id, balloon.safe_summary, payload.action_type)
         self.session.add(action)
         self.session.add(
             InteractionEvent(
-                actor_id=payload.healer_id,
-                target_id=balloon.owner_id if balloon else None,
+                actor_id=healer.id,
+                target_id=balloon.owner_id,
                 action_type=payload.action_type,
                 dialogue=cheer,
                 animation_clip=event["animation_clip"],
@@ -274,8 +342,10 @@ class AvatarService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def create_job(self, payload: AvatarJobCreate) -> AvatarJob:
+    async def create_job(self, payload: AvatarJobCreate, owner_session_id: str) -> AvatarJob:
         joker = await self.session.get(JokerProfile, payload.joker_id)
+        if not joker or joker.owner_session_id != owner_session_id:
+            raise ValueError("joker_not_owned")
         job = AvatarJob(
             joker_id=payload.joker_id,
             input_asset_id=payload.input_asset_id,

@@ -1,4 +1,12 @@
 export type LngLatTuple = [number, number];
+export type ImagePointTuple = [number, number];
+
+export const liangjiangMapImage = {
+  src: "/maps/liangjiang-campus.png",
+  width: 1672,
+  height: 941,
+  alt: "两江校区地图"
+} as const;
 
 export type CampusPoiType =
   | "gate"
@@ -18,6 +26,7 @@ export type DemoClown = {
   line: string;
   action: string;
   position: LngLatTuple;
+  mapPoint: ImagePointTuple;
   color: string;
   accent: string;
   image?: string;
@@ -32,6 +41,7 @@ export type LiangjiangPoi = {
   type: CampusPoiType;
   note: string;
   position: LngLatTuple;
+  mapPoint: ImagePointTuple;
 };
 
 export type SocialEvent = {
@@ -46,6 +56,7 @@ export type SocialEvent = {
   createdAt: string;
   status: "live" | "waiting" | "done" | "replay";
   path?: LngLatTuple[];
+  mapPath?: ImagePointTuple[];
 };
 
 export const liangjiangCampus = {
@@ -61,52 +72,187 @@ export const liangjiangCampus = {
 export const liangjiangPois: LiangjiangPoi[] = [
   {
     id: "lj-main-gate",
-    label: "宝圣大道中门入口",
+    label: "中门",
     type: "gate",
-    note: "沿宝圣大道入校，适合做展台扫码入园和首次投放小丑的位置。",
-    position: [106.59358, 29.66248]
+    note: "地图底部中央校门，适合做展台扫码入园和首次投放小丑的位置。",
+    position: [106.59358, 29.66248],
+    mapPoint: [767, 768]
   },
   {
-    id: "lj-study-zone",
-    label: "图书馆与学习楼群",
+    id: "lj-south-gate",
+    label: "南门",
+    type: "gate",
+    note: "地图左下方校门，靠近东苑食堂和南侧主路。",
+    position: [106.59108, 29.66262],
+    mapPoint: [62, 675]
+  },
+  {
+    id: "lj-north-gate",
+    label: "北门",
+    type: "gate",
+    note: "地图右下方校门，靠近生活活动中心和校医院。",
+    position: [106.59586, 29.66224],
+    mapPoint: [1288, 846]
+  },
+  {
+    id: "lj-small-north-gate",
+    label: "小北门",
+    type: "gate",
+    note: "地图最右下角出入口，连通北苑宿舍和校外道路。",
+    position: [106.59712, 29.66278],
+    mapPoint: [1582, 754]
+  },
+  {
+    id: "lj-library",
+    label: "图书馆",
     type: "study",
-    note: "靠近图书馆、致知楼和教学楼群，适合安静对话和回访卡。",
-    position: [106.59238, 29.66458]
+    note: "位于毓秀湖西侧，适合安静对话和回访卡。",
+    position: [106.59238, 29.66458],
+    mapPoint: [608, 488]
   },
   {
-    id: "lj-social-square",
-    label: "法治大道社交点",
+    id: "lj-zhizhi-building",
+    label: "致知楼",
+    type: "study",
+    note: "地图中央偏上教学楼，靠近学习楼群主轴。",
+    position: [106.59304, 29.6651],
+    mapPoint: [756, 188]
+  },
+  {
+    id: "lj-duxing-building",
+    label: "笃行楼",
+    type: "study",
+    note: "地图中央偏右教学楼，位于罗马广场北侧。",
+    position: [106.59408, 29.66508],
+    mapPoint: [944, 188]
+  },
+  {
+    id: "lj-jingye-building",
+    label: "敬业楼",
+    type: "study",
+    note: "地图中央偏左教学楼，靠近图书馆北侧道路。",
+    position: [106.59254, 29.66442],
+    mapPoint: [636, 329]
+  },
+  {
+    id: "lj-qinye-building",
+    label: "勤业楼",
+    type: "study",
+    note: "地图中央偏右教学楼，位于罗马广场东侧。",
+    position: [106.59474, 29.66436],
+    mapPoint: [1058, 329]
+  },
+  {
+    id: "lj-boxue-building",
+    label: "博学楼",
+    type: "study",
+    note: "地图右中部教学楼，靠近生活活动中心北侧。",
+    position: [106.59528, 29.6638],
+    mapPoint: [1160, 411]
+  },
+  {
+    id: "lj-roman-square",
+    label: "罗马广场",
     type: "social",
-    note: "位于法治大道和中心连廊附近，适合气球投递和短句搭话。",
-    position: [106.59325, 29.66362]
+    note: "地图中央广场，适合气球投递、短句搭话和多人社交事件。",
+    position: [106.59325, 29.66362],
+    mapPoint: [907, 395]
   },
   {
-    id: "lj-dorm-zone",
-    label: "北园生活宿舍区",
+    id: "lj-north-dorm",
+    label: "北苑宿舍",
     type: "dorm",
-    note: "贴近北园 7 栋至 11 栋宿舍片区，承接夜间回访和私密气球。",
-    position: [106.59662, 29.66536]
+    note: "地图右上方宿舍区，承接夜间回访和私密气球。",
+    position: [106.59662, 29.66536],
+    mapPoint: [1408, 159]
   },
   {
-    id: "lj-sport-field",
+    id: "lj-west-dorm",
+    label: "西苑宿舍",
+    type: "dorm",
+    note: "地图左上方宿舍区，靠近西苑食堂和南苑运动场。",
+    position: [106.59202, 29.66552],
+    mapPoint: [492, 88]
+  },
+  {
+    id: "lj-east-dorm",
+    label: "东苑宿舍",
+    type: "dorm",
+    note: "地图左中部宿舍区，靠近东苑食堂。",
+    position: [106.59172, 29.66396],
+    mapPoint: [330, 427]
+  },
+  {
+    id: "lj-north-sport-field",
     label: "北苑运动场",
     type: "sport",
-    note: "严格落在校区东北侧田径场内部，适合加油、转圈和鼓掌事件。",
-    position: [106.59576, 29.66492]
+    note: "地图右上方田径场，适合加油、转圈和鼓掌事件。",
+    position: [106.59576, 29.66492],
+    mapPoint: [1424, 276]
   },
   {
-    id: "lj-canteen",
-    label: "西政 1 食堂",
+    id: "lj-south-sport-field",
+    label: "南苑运动场",
+    type: "sport",
+    note: "地图左上方田径场，适合大型现场入园和队伍事件。",
+    position: [106.59086, 29.66542],
+    mapPoint: [176, 66]
+  },
+  {
+    id: "lj-north-playground",
+    label: "北苑操场",
+    type: "sport",
+    note: "地图右中部沙地操场，适合轻运动和放风互动。",
+    position: [106.59618, 29.66398],
+    mapPoint: [1424, 459]
+  },
+  {
+    id: "lj-north-canteen",
+    label: "北苑食堂",
     type: "service",
-    note: "靠近西政 1 食堂和宿舍楼群，适合做补给与碰头任务。",
-    position: [106.59203, 29.66478]
+    note: "地图右上方食堂，靠近北苑宿舍。",
+    position: [106.59536, 29.66534],
+    mapPoint: [1214, 127]
   },
   {
-    id: "lj-lake-walk",
+    id: "lj-west-canteen",
+    label: "西苑食堂",
+    type: "service",
+    note: "地图左上方食堂，靠近西苑宿舍。",
+    position: [106.5917, 29.66486],
+    mapPoint: [382, 185]
+  },
+  {
+    id: "lj-east-canteen",
+    label: "东苑食堂",
+    type: "service",
+    note: "地图左下方食堂，靠近东苑宿舍和南门。",
+    position: [106.59203, 29.66478],
+    mapPoint: [288, 562]
+  },
+  {
+    id: "lj-yuxiu-lake",
     label: "毓秀湖湖畔",
     type: "lake",
-    note: "落在毓秀湖步道边，适合 I 人低压陪走和一句话回访。",
-    position: [106.59392, 29.66294]
+    note: "地图中央偏下湖区，适合 I 人低压陪走和一句话回访。",
+    position: [106.59392, 29.66294],
+    mapPoint: [845, 562]
+  },
+  {
+    id: "lj-activity-center",
+    label: "生活活动中心",
+    type: "service",
+    note: "地图右下方公共服务建筑，适合活动集合与回放墙入口。",
+    position: [106.59496, 29.6629],
+    mapPoint: [1140, 650]
+  },
+  {
+    id: "lj-school-hospital",
+    label: "校医院",
+    type: "service",
+    note: "地图右下方校医院，适合安全提示和低压休息点。",
+    position: [106.59636, 29.66286],
+    mapPoint: [1336, 648]
   }
 ];
 
@@ -120,6 +266,7 @@ export const demoClowns: DemoClown[] = [
     line: "我先替你打个招呼，气球已经递过去了。",
     action: "给社交广场附近的小丑递出一只蓝色气球",
     position: [106.59358, 29.66248],
+    mapPoint: [767, 768],
     color: "#e23d2f",
     accent: "#ffd84a"
   },
@@ -132,6 +279,7 @@ export const demoClowns: DemoClown[] = [
     line: "你不用马上回答，我在旁边走一会儿。",
     action: "把一条短句挂到湖畔回访卡",
     position: [106.59392, 29.66294],
+    mapPoint: [845, 562],
     color: "#2c67c7",
     accent: "#9be36d"
   },
@@ -144,6 +292,7 @@ export const demoClowns: DemoClown[] = [
     line: "别怕，我已经替你笑了一下。",
     action: "向最近的小丑发起挥手和转圈动作",
     position: [106.59325, 29.66362],
+    mapPoint: [907, 395],
     color: "#ff5f8f",
     accent: "#27f5d4"
   },
@@ -156,6 +305,7 @@ export const demoClowns: DemoClown[] = [
     line: "我替你记住了，对方喜欢被认真听完。",
     action: "记录一次低压对话并生成一句回访判词",
     position: [106.59238, 29.66458],
+    mapPoint: [608, 488],
     color: "#7c5cff",
     accent: "#ffe096"
   },
@@ -168,6 +318,7 @@ export const demoClowns: DemoClown[] = [
     line: "我不认识你，但我刚刚给你加油了。",
     action: "把一次鼓掌事件推送到回放时间线",
     position: [106.59576, 29.66492],
+    mapPoint: [1424, 276],
     color: "#26b86d",
     accent: "#ffd84a"
   },
@@ -180,6 +331,7 @@ export const demoClowns: DemoClown[] = [
     line: "今天你没有消失，你只是让小丑先出门了。",
     action: "把宿舍区的匿名回访写进时间线",
     position: [106.59662, 29.66536],
+    mapPoint: [1408, 159],
     color: "#f08a24",
     accent: "#b7f7ff"
   }
@@ -191,7 +343,7 @@ export const demoEvents: SocialEvent[] = [
     title: "气球试探",
     from: "demo-clown-01",
     to: "demo-clown-02",
-    poiId: "lj-lake-walk",
+    poiId: "lj-yuxiu-lake",
     summary: "糖鼻邮差把蓝色气球送到湖边听筒，双方只说了一句话。",
     type: "balloon",
     moodDelta: 2,
@@ -201,6 +353,11 @@ export const demoEvents: SocialEvent[] = [
       [106.59358, 29.66248],
       [106.59358, 29.66312],
       [106.59392, 29.66294]
+    ],
+    mapPath: [
+      [767, 768],
+      [790, 650],
+      [845, 562]
     ]
   },
   {
@@ -208,7 +365,7 @@ export const demoEvents: SocialEvent[] = [
     title: "广场盲盒",
     from: "demo-clown-03",
     to: "demo-clown-01",
-    poiId: "lj-social-square",
+    poiId: "lj-roman-square",
     summary: "彩带搭子在社交广场转圈，替用户发起一次低压搭话。",
     type: "wave",
     moodDelta: 3,
@@ -218,6 +375,11 @@ export const demoEvents: SocialEvent[] = [
       [106.59325, 29.66362],
       [106.59342, 29.66306],
       [106.59358, 29.66248]
+    ],
+    mapPath: [
+      [907, 395],
+      [828, 560],
+      [767, 768]
     ]
   },
   {
@@ -225,7 +387,7 @@ export const demoEvents: SocialEvent[] = [
     title: "安静回访",
     from: "demo-clown-04",
     to: "demo-clown-02",
-    poiId: "lj-study-zone",
+    poiId: "lj-library",
     summary: "书库影子把湖边那句话写成回访卡。",
     type: "reply",
     moodDelta: 1,
@@ -235,6 +397,11 @@ export const demoEvents: SocialEvent[] = [
       [106.59238, 29.66458],
       [106.59318, 29.66372],
       [106.59392, 29.66294]
+    ],
+    mapPath: [
+      [608, 488],
+      [735, 540],
+      [845, 562]
     ]
   },
   {
@@ -242,7 +409,7 @@ export const demoEvents: SocialEvent[] = [
     title: "操场加油",
     from: "demo-clown-05",
     to: "demo-clown-03",
-    poiId: "lj-sport-field",
+    poiId: "lj-north-sport-field",
     summary: "操场鼓手给彩带搭子补了一段鼓掌动画。",
     type: "cheer",
     moodDelta: 4,
@@ -252,6 +419,11 @@ export const demoEvents: SocialEvent[] = [
       [106.59576, 29.66492],
       [106.59442, 29.66422],
       [106.59325, 29.66362]
+    ],
+    mapPath: [
+      [1424, 276],
+      [1180, 360],
+      [907, 395]
     ]
   },
   {
@@ -259,7 +431,7 @@ export const demoEvents: SocialEvent[] = [
     title: "夜灯回收",
     from: "demo-clown-06",
     to: "demo-clown-04",
-    poiId: "lj-dorm-zone",
+    poiId: "lj-north-dorm",
     summary: "夜灯糖纸收走一只没被打开的情绪气球，明天再投递。",
     type: "gift",
     moodDelta: 1,
@@ -269,6 +441,11 @@ export const demoEvents: SocialEvent[] = [
       [106.59662, 29.66536],
       [106.59442, 29.66462],
       [106.59238, 29.66458]
+    ],
+    mapPath: [
+      [1408, 159],
+      [1058, 329],
+      [608, 488]
     ]
   }
 ];

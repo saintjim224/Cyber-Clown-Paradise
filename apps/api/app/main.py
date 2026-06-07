@@ -1,13 +1,15 @@
 import asyncio
 import json
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import get_current_user_session, set_session_cookie
 from app.config import Settings, get_settings
 from app.db import create_db_schema, get_session
+from app.models import UserSession
 from app.schemas import (
     AvatarJobCreate,
     AvatarJobOut,
@@ -37,6 +39,15 @@ from app.services import (
 
 
 app = FastAPI(title="CyberJoker Park API", version="0.1.0")
+
+
+def service_error(exc: ValueError) -> HTTPException:
+    detail = str(exc)
+    if detail == "no_active_joker":
+        return HTTPException(status_code=409, detail=detail)
+    if detail in {"cannot_heal_own_balloon", "joker_not_owned"}:
+        return HTTPException(status_code=403, detail=detail)
+    return HTTPException(status_code=404, detail=detail)
 
 
 @app.on_event("startup")
@@ -73,16 +84,48 @@ async def create_joker(
     payload: JokerCreate,
     session: AsyncSession = Depends(get_session),
     settings: Settings = Depends(get_settings),
+    user_session: UserSession = Depends(get_current_user_session),
 ) -> JokerOut:
-    return await JokerService(session, settings).create_joker(payload)
+    return await JokerService(session, settings).create_joker(payload, user_session.id)
+
+
+@app.get("/api/jokers/me", response_model=JokerOut)
+async def get_my_joker(
+    session: AsyncSession = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+    user_session: UserSession = Depends(get_current_user_session),
+) -> JokerOut:
+    try:
+        return await JokerService(session, settings).current_joker(user_session.id)
+    except ValueError as exc:
+        raise service_error(exc) from exc
+
+
+@app.post("/api/jokers/enter/{token}", response_model=JokerOut)
+async def enter_with_joker_token(
+    token: str,
+    response: Response,
+    session: AsyncSession = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+) -> JokerOut:
+    try:
+        joker = await JokerService(session, settings).enter_with_token(token)
+    except ValueError as exc:
+        raise service_error(exc) from exc
+    set_session_cookie(response, joker.owner_session_id)
+    return joker
 
 
 @app.post("/api/balloons", response_model=BalloonOut)
 async def create_balloon(
     payload: BalloonCreate,
     session: AsyncSession = Depends(get_session),
+    user_session: UserSession = Depends(get_current_user_session),
 ) -> BalloonOut:
-    return await BalloonService(session).create_balloon(payload)
+    try:
+        return await BalloonService(session).create_balloon(payload, user_session.id)
+    except ValueError as exc:
+        raise service_error(exc) from exc
 
 
 @app.post("/api/heal/match", response_model=MatchOut)
@@ -90,11 +133,12 @@ async def match_balloon(
     payload: MatchRequest,
     session: AsyncSession = Depends(get_session),
     settings: Settings = Depends(get_settings),
+    user_session: UserSession = Depends(get_current_user_session),
 ) -> MatchOut:
     try:
-        return await HealService(session, settings).find_match(payload.healer_id, payload.action_type)
+        return await HealService(session, settings).find_match(user_session.id, payload.action_type)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise service_error(exc) from exc
 
 
 @app.post("/api/heal/actions", response_model=HealActionOut)
@@ -102,11 +146,12 @@ async def submit_action(
     payload: HealActionCreate,
     session: AsyncSession = Depends(get_session),
     settings: Settings = Depends(get_settings),
+    user_session: UserSession = Depends(get_current_user_session),
 ) -> HealActionOut:
     try:
-        return await HealService(session, settings).submit_action(payload)
+        return await HealService(session, settings).submit_action(payload, user_session.id)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise service_error(exc) from exc
 
 
 @app.get("/api/replay/{token}", response_model=ReplayOut)
@@ -159,8 +204,12 @@ async def park_stream(
 async def create_avatar_job(
     payload: AvatarJobCreate,
     session: AsyncSession = Depends(get_session),
+    user_session: UserSession = Depends(get_current_user_session),
 ) -> AvatarJobOut:
-    return await AvatarService(session).create_job(payload)
+    try:
+        return await AvatarService(session).create_job(payload, user_session.id)
+    except ValueError as exc:
+        raise service_error(exc) from exc
 
 
 @app.get("/api/jobs/{job_id}", response_model=AvatarJobOut)

@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "next dev -H 0.0.0.0",
+    "dev": "node ../../scripts/run-with-log.mjs web web.3000 -- next dev -H 0.0.0.0 -p 3000",
     "build": "next build",
-    "start": "next start -H 0.0.0.0",
+    "start": "node ../../scripts/run-with-log.mjs web web.3000 -- next start -H 0.0.0.0 -p 3000",
     "typecheck": "tsc --noEmit",
     "lint": "next lint"
   },

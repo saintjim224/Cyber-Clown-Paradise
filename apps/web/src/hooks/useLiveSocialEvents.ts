@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Joker } from "@/lib/api";
+import type { Balloon, HealAction, Joker, MatchResult } from "@/lib/api";
 import {
   demoClowns,
   demoEvents,
@@ -17,6 +17,15 @@ type Energy = DemoClown["energy"];
 type DropBalloonOptions = {
   text: string;
   mood: string;
+  balloon?: Balloon;
+  senderId?: string;
+};
+
+type ReplyOptions = {
+  eventId: string;
+  responderId?: string;
+  match?: MatchResult;
+  action?: HealAction;
 };
 
 type UseLiveSocialEventsResult = {
@@ -26,7 +35,8 @@ type UseLiveSocialEventsResult = {
   joinPark: () => DemoClown;
   joinWave: (count?: number) => DemoClown[];
   dropBalloon: (options: DropBalloonOptions) => SocialEvent;
-  replyToEvent: (eventId: string, responderId?: string) => void;
+  ensureMatchedBalloon: (match: MatchResult) => SocialEvent;
+  replyToEvent: (options: ReplyOptions) => void;
   replyWaitingBalloons: () => void;
   focusEvent: (eventId: string) => void;
   addJokerToPark: (joker: Joker) => DemoClown;
@@ -126,13 +136,18 @@ function withBoundedEvents(events: SocialEvent[]) {
   return events.slice(-48);
 }
 
-function makeReplyEvents(currentEvent: SocialEvent, currentClowns: DemoClown[], responderId?: string): [SocialEvent, SocialEvent] | null {
+function makeReplyEvents(
+  currentEvent: SocialEvent,
+  currentClowns: DemoClown[],
+  responderId?: string,
+  action?: HealAction
+): [SocialEvent, SocialEvent] | null {
   const candidates = currentClowns.filter((clown) => clown.id !== currentEvent.from);
   if (currentClowns.length === 0 || candidates.length === 0) return null;
 
   const responder = currentClowns.find((clown) => clown.id === responderId) ?? randomItem(candidates);
   const from = currentClowns.find((clown) => clown.id === currentEvent.from);
-  const line = randomItem(replyLines);
+  const line = action?.cheer_text ?? randomItem(replyLines);
   const replied: SocialEvent = {
     ...currentEvent,
     to: responder.id,
@@ -275,14 +290,16 @@ export function useLiveSocialEvents(): UseLiveSocialEventsResult {
   const dropBalloon = useCallback((options: DropBalloonOptions) => {
     const text = options.text.trim().slice(0, 32) || options.mood;
     const currentClowns = clownsRef.current;
-    const sender = currentClowns.find((clown) => clown.id.startsWith("guest-clown")) ?? currentClowns[0];
+    const sender = currentClowns.find((clown) => clown.id === options.senderId) ??
+      currentClowns.find((clown) => clown.id.startsWith("guest-clown")) ??
+      currentClowns[0];
     const poi = randomItem([liangjiangPois[2], liangjiangPois[6], liangjiangPois[4]]);
     const event: SocialEvent = {
-      id: makeId("balloon"),
+      id: options.balloon?.id ?? makeId("balloon"),
       title: `${options.mood}气球`,
       from: sender.id,
       poiId: poi.id,
-      summary: `${sender.name}投放：“${text}”`,
+      summary: `${sender.name}投放：“${options.balloon?.safe_summary ?? text}”`,
       type: "balloon",
       moodDelta: 1,
       createdAt: nowIso(),
@@ -295,12 +312,39 @@ export function useLiveSocialEvents(): UseLiveSocialEventsResult {
     return event;
   }, []);
 
-  const replyToEvent = useCallback((eventId: string, responderId?: string) => {
+  const ensureMatchedBalloon = useCallback((match: MatchResult) => {
+    const existing = eventsRef.current.find((event) => event.id === match.balloon_id);
+    if (existing) return existing;
+
     const currentClowns = clownsRef.current;
-    const currentEvent = eventsRef.current.find((event) => event.id === eventId);
+    const owner = currentClowns.find((clown) => clown.id === match.owner_id);
+    const poi = randomItem([liangjiangPois[2], liangjiangPois[6], liangjiangPois[4]]);
+    const event: SocialEvent = {
+      id: match.balloon_id,
+      title: "待接力气球",
+      from: match.owner_id,
+      poiId: poi.id,
+      summary: owner ? `${owner.name}投放了一颗气球，等待接力回应。` : match.prompt,
+      type: "balloon",
+      moodDelta: 1,
+      createdAt: nowIso(),
+      status: "waiting",
+      path: owner ? [owner.position, poi.position] : [poi.position]
+    };
+
+    eventsRef.current = withBoundedEvents([...eventsRef.current, event]);
+    setEvents((current) => withBoundedEvents([...current, event]));
+    setActiveEventId(event.id);
+    return event;
+  }, []);
+
+  const replyToEvent = useCallback(({ eventId, responderId, match, action }: ReplyOptions) => {
+    const currentClowns = clownsRef.current;
+    const currentEvent = eventsRef.current.find((event) => event.id === eventId) ??
+      eventsRef.current.find((event) => event.id === match?.balloon_id);
     if (!currentEvent) return;
 
-    const replyEvents = makeReplyEvents(currentEvent, currentClowns, responderId);
+    const replyEvents = makeReplyEvents(currentEvent, currentClowns, responderId, action);
     if (!replyEvents) return;
     const [replied, replay] = replyEvents;
 
@@ -374,6 +418,7 @@ export function useLiveSocialEvents(): UseLiveSocialEventsResult {
     joinPark,
     joinWave,
     dropBalloon,
+    ensureMatchedBalloon,
     replyToEvent,
     replyWaitingBalloons,
     focusEvent,

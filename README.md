@@ -1,6 +1,6 @@
 # CyberJoker Park
 
-赛博小丑乐园是一个 Web/PWA 展台 MVP：用户生成自己的 Q 版小丑宠物，I 人寄存情绪气球，E 人或自主小丑完成治愈互动，用户扫码回访时看到 3D 乐园回放。
+赛博小丑乐园是一个 Web/PWA 展台 MVP：用户生成自己的 Q 版小丑宠物，扫码进入小丑乐园投放气球，由其他小丑接力回应，并沉淀成可回放的行为记录。
 
 ## Stack
 
@@ -23,6 +23,8 @@ npm run dev:web
 ```
 
 The web app runs on `http://localhost:3000`; the API runs on `http://localhost:8000`.
+
+Set `NEXT_PUBLIC_SITE_URL` to the public web origin before deployment so generated QR codes point to the public entrance URL.
 
 ## AMap Campus Map
 
