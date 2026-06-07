@@ -2,7 +2,7 @@
 
 import { Map, Radio } from "lucide-react";
 import { ParkSceneClient } from "@/components/ParkSceneClient";
-import { PixelCampusMap } from "@/components/pixel/PixelCampusMap";
+import { LiangjiangRealtimeMap } from "@/components/park/LiangjiangRealtimeMap";
 import type { Joker, ParkEvent } from "@/lib/api";
 
 export function ParkExperiencePanel({ joker, events }: { joker: Joker | null; events: ParkEvent[] }) {
@@ -12,12 +12,12 @@ export function ParkExperiencePanel({ joker, events }: { joker: Joker | null; ev
         <div className="section-title">
           <div>
             <span className="pixel-kicker">CAMPUS MAP</span>
-            <h2>西政像素地图</h2>
-            <p>Mario 式界面，Stardew 式校园区域。当前为原创抽象地图。</p>
+            <h2>两江小丑实时游园</h2>
+            <p>直接使用两江校区地图。沙坪坝校区和宝圣湖校区暂未开放。</p>
           </div>
           <Map color="var(--color-leaf-dark)" aria-hidden />
         </div>
-        <PixelCampusMap joker={joker} events={events} />
+        <LiangjiangRealtimeMap joker={joker} events={events} compact allowCampusTabs />
       </section>
 
       <section className="stage-panel">
