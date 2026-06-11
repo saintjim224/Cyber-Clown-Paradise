@@ -26,7 +26,8 @@ from app.schemas import (
 HEALER_ENERGY_DELTA = 1
 OWNER_ENERGY_DELTA = 2
 AFFINITY_DELTA = 3
-MAX_VOTEABLE_CLOWNS = 80
+MAX_PARK_VISIBLE_CLOWNS = 200
+MAX_VOTEABLE_CLOWNS = MAX_PARK_VISIBLE_CLOWNS
 
 
 def _simple_embedding(text: str) -> list[float]:
@@ -78,8 +79,8 @@ class JokerService:
             raise ValueError("token_not_found")
         return joker
 
-    async def park_jokers(self, limit: int = 36) -> list[JokerProfile]:
-        bounded_limit = max(1, min(limit, 80))
+    async def park_jokers(self, limit: int = MAX_PARK_VISIBLE_CLOWNS) -> list[JokerProfile]:
+        bounded_limit = max(1, min(limit, MAX_PARK_VISIBLE_CLOWNS))
         result = await self.session.execute(
             select(JokerProfile)
             .where(JokerProfile.owner_session_id.is_not(None))
@@ -218,6 +219,16 @@ class BalloonService:
         await self.session.commit()
         await self.session.refresh(balloon)
         return balloon
+
+    async def pending_balloons(self, limit: int = 40) -> list[EmoBalloon]:
+        bounded_limit = max(1, min(limit, 80))
+        result = await self.session.execute(
+            select(EmoBalloon)
+            .where(EmoBalloon.status == "pending")
+            .order_by(desc(EmoBalloon.created_at))
+            .limit(bounded_limit)
+        )
+        return list(reversed(result.scalars().all()))
 
 
 class HealService:

@@ -1,3 +1,5 @@
+from contextlib import AsyncExitStack
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -229,6 +231,53 @@ async def test_targeted_match_only_returns_selected_jokers_pending_balloon():
 
 
 @pytest.mark.asyncio
+async def test_park_balloons_lists_only_pending_balloons():
+    transport = ASGITransport(app=app)
+    async with (
+        AsyncClient(transport=transport, base_url="http://test") as owner_client,
+        AsyncClient(transport=transport, base_url="http://test") as healer_client,
+    ):
+        empty_resp = await owner_client.get("/api/park/balloons")
+        assert empty_resp.status_code == 200, empty_resp.text
+        assert empty_resp.json() == []
+
+        owner_resp = await owner_client.post("/api/jokers", json=joker_payload("气球主人"))
+        healer_resp = await healer_client.post(
+            "/api/jokers",
+            json=joker_payload("接球小丑", "ENFP", "狮子座", "E", "lj-roman-square"),
+        )
+        assert owner_resp.status_code == 200, owner_resp.text
+        assert healer_resp.status_code == 200, healer_resp.text
+
+        balloon_resp = await owner_client.post("/api/balloons", json={"emo_text": "刷新后也要看得见的气球"})
+        assert balloon_resp.status_code == 200, balloon_resp.text
+        balloon = balloon_resp.json()
+
+        pending_resp = await owner_client.get("/api/park/balloons")
+        assert pending_resp.status_code == 200, pending_resp.text
+        pending_balloons = pending_resp.json()
+        assert [item["id"] for item in pending_balloons] == [balloon["id"]]
+        assert pending_balloons[0]["status"] == "pending"
+        assert pending_balloons[0]["safe_summary"] == balloon["safe_summary"]
+
+        match_resp = await healer_client.post("/api/heal/match", json={"action_type": "cheer"})
+        assert match_resp.status_code == 200, match_resp.text
+        action_resp = await healer_client.post(
+            "/api/heal/actions",
+            json={
+                "balloon_id": balloon["id"],
+                "action_type": "cheer",
+                "cheer_text": "我接住了，刷新以后这颗就该离开等待池。",
+            },
+        )
+        assert action_resp.status_code == 200, action_resp.text
+
+        healed_resp = await owner_client.get("/api/park/balloons")
+        assert healed_resp.status_code == 200, healed_resp.text
+        assert all(item["id"] != balloon["id"] for item in healed_resp.json())
+
+
+@pytest.mark.asyncio
 async def test_same_session_reuses_first_joker_without_updates():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -383,6 +432,43 @@ async def test_park_jokers_lists_jokers_from_other_sessions():
         assert second_joker["desired_poi_id"] == "lj-library"
         assert park_poi_ids[first_joker["id"]] == "lj-school-hospital"
         assert park_poi_ids[second_joker["id"]] == "lj-library"
+
+
+@pytest.mark.asyncio
+async def test_park_jokers_and_vote_summary_include_more_than_legacy_limit():
+    transport = ASGITransport(app=app)
+    async with AsyncExitStack() as stack:
+        created_ids: list[str] = []
+        for index in range(40):
+            client = await stack.enter_async_context(AsyncClient(transport=transport, base_url="http://test"))
+            resp = await client.post(
+                "/api/jokers",
+                json=joker_payload(
+                    f"批量小丑{index:02d}",
+                    "ENFP" if index % 2 else "INFP",
+                    "狮子座" if index % 2 else "双鱼座",
+                    "E" if index % 2 else "I",
+                    "lj-library" if index % 2 else "lj-yuxiu-lake",
+                ),
+            )
+            assert resp.status_code == 200, resp.text
+            created_ids.append(resp.json()["id"])
+
+        viewer_client = await stack.enter_async_context(AsyncClient(transport=transport, base_url="http://test"))
+        park_resp = await viewer_client.get("/api/park/jokers")
+        assert park_resp.status_code == 200, park_resp.text
+        park_ids = [joker["id"] for joker in park_resp.json()]
+        assert len(park_ids) == len(created_ids)
+        assert set(created_ids) == set(park_ids)
+
+        summary_resp = await viewer_client.post(
+            "/api/park/clown-votes/summary",
+            json={"clown_ids": created_ids},
+        )
+        assert summary_resp.status_code == 200, summary_resp.text
+        summary = summary_resp.json()
+        assert len(summary["items"]) == len(created_ids)
+        assert [item["clown_id"] for item in summary["items"]] == created_ids
 
 
 @pytest.mark.asyncio

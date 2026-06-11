@@ -102,6 +102,10 @@ function isDemoClownId(id: string | undefined) {
   return Boolean(id?.startsWith("demo-clown-"));
 }
 
+function isRealParkClown(id: string | undefined) {
+  return Boolean(id?.startsWith("jkr_"));
+}
+
 const sessionJokerPrompt = "先在灵魂工坊生成你的专属小丑，再回来投放气球。";
 
 function commandErrorMessage(error: unknown, fallback: string, targetClownName?: string) {
@@ -117,7 +121,18 @@ function commandErrorMessage(error: unknown, fallback: string, targetClownName?:
 }
 
 export function ParkLive2D() {
-  const { clowns, events, activeEvent, dropBalloon, ensureMatchedBalloon, replyToEvent, focusEvent, addJokerToPark, syncParkJokers } = useLiveSocialEvents();
+  const {
+    clowns,
+    events,
+    activeEvent,
+    dropBalloon,
+    ensureMatchedBalloon,
+    replyToEvent,
+    focusEvent,
+    addJokerToPark,
+    syncParkJokers,
+    syncPendingBalloons
+  } = useLiveSocialEvents();
   const [selected, setSelected] = useState<Selection>({ kind: "event", id: activeEvent?.id ?? events[0]?.id ?? "" });
   const [activeModule, setActiveModule] = useState<SocialEvent["status"]>("live");
   const [balloonText, setBalloonText] = useState("");
@@ -199,8 +214,14 @@ export function ParkLive2D() {
 
     async function loadSharedJokers() {
       try {
-        const parkJokers = await apiFetch<Joker[]>("/api/park/jokers");
-        if (!cancelled) syncParkJokers(parkJokers);
+        const [parkJokers, pendingBalloons] = await Promise.all([
+          apiFetch<Joker[]>("/api/park/jokers"),
+          apiFetch<Balloon[]>("/api/park/balloons")
+        ]);
+        if (!cancelled) {
+          syncParkJokers(parkJokers);
+          syncPendingBalloons(pendingBalloons);
+        }
       } catch {
         // Keep the local demo usable if the shared park list is temporarily unavailable.
       }
@@ -212,7 +233,7 @@ export function ParkLive2D() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [syncParkJokers]);
+  }, [syncParkJokers, syncPendingBalloons]);
 
   const focusedEvent = selected.kind === "event" ? events.find((event) => event.id === selected.id) ?? activeEvent : activeEvent;
   const focusedClown = selected.kind === "clown" ? clowns.find((clown) => clown.id === selected.id) ?? null : null;
@@ -228,9 +249,13 @@ export function ParkLive2D() {
   const waitingCount = events.filter((event) => event.status === "waiting").length;
   const recentCount = Math.max(events.filter(isRecent).length, events.slice(-5).filter((event) => event.status === "live").length);
   const relayCount = events.filter((event) => event.to || event.status === "done" || event.status === "replay").length;
-  const voteableClowns = useMemo(
-    () => clowns.filter((clown) => !clown.id.startsWith("demo-clown-")),
+  const realParkClowns = useMemo(
+    () => clowns.filter((clown) => isRealParkClown(clown.id)),
     [clowns]
+  );
+  const voteableClowns = useMemo(
+    () => realParkClowns,
+    [realParkClowns]
   );
   const voteableClownIds = useMemo(() => voteableClowns.map((clown) => clown.id), [voteableClowns]);
   const voteCountById = useMemo(
@@ -501,7 +526,7 @@ export function ParkLive2D() {
 
           <div className="park-heat-grid" aria-label="现场热度">
             <div>
-              <strong>{clowns.length}</strong>
+              <strong>{realParkClowns.length}</strong>
               <span>当前小丑</span>
             </div>
             <div>
@@ -530,7 +555,10 @@ export function ParkLive2D() {
             <div className="park-favorite-board__header">
               <div>
                 <span className="pixel-kicker">FAVORITES</span>
-                <h2>小丑人气榜</h2>
+                <div className="park-favorite-title-row">
+                  <h2>小丑人气榜</h2>
+                  <span>共 {rankedClowns.length} 只</span>
+                </div>
                 <p>口头禅来自灵魂草案 / 入园档案；每人只能投一票，点一下投票，再点一下取消。</p>
               </div>
               <Trophy color="var(--color-coin)" aria-hidden />

@@ -202,6 +202,11 @@ async def park_jokers(
     return [JokerOut.model_validate(joker) for joker in await JokerService(session, settings).park_jokers()]
 
 
+@app.get("/api/park/balloons", response_model=list[BalloonOut])
+async def park_balloons(session: AsyncSession = Depends(get_session)) -> list[BalloonOut]:
+    return [BalloonOut.model_validate(balloon) for balloon in await BalloonService(session).pending_balloons()]
+
+
 @app.post("/api/park/clown-votes/summary", response_model=ClownVoteSummaryOut)
 async def clown_vote_summary(
     payload: ClownVoteSummaryRequest,
