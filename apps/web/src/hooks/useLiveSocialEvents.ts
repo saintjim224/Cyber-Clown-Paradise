@@ -44,6 +44,7 @@ type UseLiveSocialEventsResult = {
   focusEvent: (eventId: string) => void;
   addJokerToPark: (joker: Joker) => DemoClown;
   syncParkJokers: (jokers: Joker[]) => DemoClown[];
+  syncPendingBalloons: (balloons: Balloon[]) => SocialEvent[];
 };
 
 const nicknames = ["纸杯礼帽", "红鼻便利贴", "星星鞋带", "汽水泡泡", "午后鼓点", "薄荷口哨", "奶油信封", "像素风筝"];
@@ -511,6 +512,44 @@ export function useLiveSocialEvents(): UseLiveSocialEventsResult {
     return event;
   }, []);
 
+  const syncPendingBalloons = useCallback((balloons: Balloon[]) => {
+    const pending = balloons.filter((balloon) => balloon.status === "pending");
+    const pendingIds = new Set(pending.map((balloon) => balloon.id));
+    const currentEvents = eventsRef.current;
+    const currentIds = new Set(currentEvents.map((event) => event.id));
+    const currentClowns = clownsRef.current;
+    const createdEvents = pending
+      .filter((balloon) => !currentIds.has(balloon.id))
+      .map((balloon): SocialEvent => {
+        const owner = currentClowns.find((clown) => clown.id === balloon.owner_id);
+        const poi = owner ? clownHomePoi(owner) : randomItem([poiById("lj-roman-square"), poiById("lj-yuxiu-lake"), poiById("lj-north-sport-field")]);
+        return {
+          id: balloon.id,
+          title: "待接力气球",
+          from: balloon.owner_id,
+          poiId: poi.id,
+          summary: owner
+            ? `${owner.name}投放了一颗气球：“${balloon.safe_summary}”`
+            : `现场有一颗气球等待回应：“${balloon.safe_summary}”`,
+          type: "balloon",
+          moodDelta: 1,
+          createdAt: nowIso(),
+          status: "waiting",
+          path: owner ? [owner.position, poi.position] : [poi.position],
+          mapPath: owner ? [owner.mapPoint, poi.mapPoint] : [poi.mapPoint]
+        };
+      });
+
+    const keptEvents = currentEvents.filter(
+      (event) => !(event.status === "waiting" && event.id.startsWith("bal_") && !pendingIds.has(event.id))
+    );
+    const nextEvents = withBoundedEvents([...keptEvents, ...createdEvents]);
+    eventsRef.current = nextEvents;
+    setEvents(nextEvents);
+    if (createdEvents[0]) setActiveEventId(createdEvents[0].id);
+    return createdEvents;
+  }, []);
+
   const replyToEvent = useCallback(({ eventId, responderId, match, action }: ReplyOptions) => {
     const currentClowns = clownsRef.current;
     const currentEvent = eventsRef.current.find((event) => event.id === eventId) ??
@@ -597,6 +636,7 @@ export function useLiveSocialEvents(): UseLiveSocialEventsResult {
     replyWaitingBalloons,
     focusEvent,
     addJokerToPark,
-    syncParkJokers
+    syncParkJokers,
+    syncPendingBalloons
   };
 }
