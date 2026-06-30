@@ -1,10 +1,14 @@
+import os
 from contextlib import AsyncExitStack
+from datetime import timedelta
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.db import Base, create_db_schema, engine
+import app.services as services
+from app.db import Base, SessionLocal, create_db_schema, engine
 from app.main import app
+from app.models import ChatRoom
 
 
 FACE_DESCRIPTOR = {
@@ -639,3 +643,338 @@ async def test_enter_token_rejects_invalid_token():
         enter_resp = await client.post("/api/jokers/enter/not-a-token")
         assert enter_resp.status_code == 404, enter_resp.text
         assert enter_resp.json()["detail"] == "token_not_found"
+
+
+@pytest.mark.asyncio
+async def test_admin_login_stats_and_super_admin_delete_joker():
+    admin_transport = ASGITransport(app=app, client=("127.0.0.1", 12345))
+    user_transport = ASGITransport(app=app)
+    async with (
+        AsyncClient(transport=admin_transport, base_url="http://test") as admin_client,
+        AsyncClient(transport=user_transport, base_url="http://test") as owner_client,
+    ):
+        blocked_resp = await admin_client.get("/api/admin/jokers")
+        assert blocked_resp.status_code == 401, blocked_resp.text
+
+        bad_login_resp = await admin_client.post(
+            "/api/admin/login",
+            json={"username": "admin", "password": "wrong"},
+        )
+        assert bad_login_resp.status_code == 401, bad_login_resp.text
+
+        login_resp = await admin_client.post(
+            "/api/admin/login",
+            json={"username": "admin", "password": "test-admin-password"},
+        )
+        assert login_resp.status_code == 200, login_resp.text
+        session = login_resp.json()
+        assert session["role"] == "super_admin"
+        assert session["is_super_admin"] is True
+
+        joker_resp = await owner_client.post("/api/jokers", json=joker_payload("Admin Delete Me"))
+        assert joker_resp.status_code == 200, joker_resp.text
+        joker = joker_resp.json()
+
+        balloon_resp = await owner_client.post("/api/balloons", json={"emo_text": "admin cleanup target"})
+        assert balloon_resp.status_code == 200, balloon_resp.text
+
+        stats_resp = await admin_client.get("/api/admin/stats")
+        assert stats_resp.status_code == 200, stats_resp.text
+        stats = stats_resp.json()
+        assert stats["joker_count"] == 1
+        assert stats["balloon_count"] == 1
+
+        list_resp = await admin_client.get("/api/admin/jokers")
+        assert list_resp.status_code == 200, list_resp.text
+        jokers = list_resp.json()
+        assert jokers[0]["id"] == joker["id"]
+        assert jokers[0]["balloon_count"] == 1
+
+        delete_resp = await admin_client.delete(f"/api/admin/jokers/{joker['id']}")
+        assert delete_resp.status_code == 200, delete_resp.text
+        deleted = delete_resp.json()
+        assert deleted["joker_id"] == joker["id"]
+        assert deleted["deleted_counts"]["jokers"] == 1
+        assert deleted["deleted_counts"]["balloons"] == 1
+
+        roster_resp = await admin_client.get("/api/park/jokers")
+        assert roster_resp.status_code == 200, roster_resp.text
+        assert roster_resp.json() == []
+
+
+@pytest.mark.asyncio
+async def test_remote_admin_login_is_not_super_admin():
+    transport = ASGITransport(app=app, client=("192.0.2.24", 43210))
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        login_resp = await client.post(
+            "/api/admin/login",
+            json={"username": "admin", "password": "test-admin-password"},
+        )
+        assert login_resp.status_code == 200, login_resp.text
+        session = login_resp.json()
+        assert session["role"] == "admin"
+        assert session["is_super_admin"] is False
+
+        forbidden_resp = await client.delete("/api/admin/jokers/jkr_missing")
+        assert forbidden_resp.status_code == 403, forbidden_resp.text
+        assert forbidden_resp.json()["detail"] == "super_admin_required"
+
+
+@pytest.mark.asyncio
+async def test_admin_password_reload_without_api_restart():
+    original_password = os.environ["ADMIN_PASSWORD"]
+    rotated_password = "rotated-admin-password"
+    transport = ASGITransport(app=app, client=("127.0.0.1", 12345))
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            login_resp = await client.post(
+                "/api/admin/login",
+                json={"username": "admin", "password": original_password},
+            )
+            assert login_resp.status_code == 200, login_resp.text
+
+            os.environ["ADMIN_PASSWORD"] = rotated_password
+
+            old_session_resp = await client.get("/api/admin/me")
+            assert old_session_resp.status_code == 401, old_session_resp.text
+
+            old_password_resp = await client.post(
+                "/api/admin/login",
+                json={"username": "admin", "password": original_password},
+            )
+            assert old_password_resp.status_code == 401, old_password_resp.text
+
+            rotated_login_resp = await client.post(
+                "/api/admin/login",
+                json={"username": "admin", "password": rotated_password},
+            )
+            assert rotated_login_resp.status_code == 200, rotated_login_resp.text
+            assert rotated_login_resp.json()["is_super_admin"] is True
+    finally:
+        os.environ["ADMIN_PASSWORD"] = original_password
+
+
+@pytest.mark.asyncio
+async def test_private_chat_unlocks_after_three_relationship_interactions(monkeypatch: pytest.MonkeyPatch):
+    transport = ASGITransport(app=app)
+    async with (
+        AsyncClient(transport=transport, base_url="http://test") as i_client,
+        AsyncClient(transport=transport, base_url="http://test") as e_client,
+    ):
+        i_resp = await i_client.post("/api/jokers", json=joker_payload("Chat I", "INFP", "Pisces", "I"))
+        e_resp = await e_client.post("/api/jokers", json=joker_payload("Chat E", "ENFP", "Leo", "E"))
+        assert i_resp.status_code == 200, i_resp.text
+        assert e_resp.status_code == 200, e_resp.text
+        i_joker = i_resp.json()
+        e_joker = e_resp.json()
+
+        locked_resp = await i_client.post(f"/api/chat/private/{e_joker['id']}")
+        assert locked_resp.status_code == 409, locked_resp.text
+        assert locked_resp.json()["detail"] == "chat_locked"
+
+        for index in range(3):
+            balloon_resp = await i_client.post(
+                "/api/balloons",
+                json={"emo_text": f"chat unlock balloon {index}"},
+            )
+            assert balloon_resp.status_code == 200, balloon_resp.text
+            balloon = balloon_resp.json()
+            action_resp = await e_client.post(
+                "/api/heal/actions",
+                json={
+                    "balloon_id": balloon["id"],
+                    "action_type": "cheer",
+                    "cheer_text": f"chat unlock cheer {index}",
+                },
+            )
+            assert action_resp.status_code == 200, action_resp.text
+
+        replay_resp = await i_client.get(f"/api/replay/{i_joker['qr_token']}")
+        assert replay_resp.status_code == 200, replay_resp.text
+        relationship = replay_resp.json()["relationships"][0]
+        assert relationship["joker"]["id"] == e_joker["id"]
+        assert relationship["affinity_score"] == 9
+        assert relationship["interaction_count"] == 3
+        assert relationship["chat_unlocked"] is True
+        assert relationship["chat_room_id"] is not None
+
+        room_resp = await i_client.post(f"/api/chat/private/{e_joker['id']}")
+        assert room_resp.status_code == 200, room_resp.text
+        room = room_resp.json()
+        assert room["id"] == relationship["chat_room_id"]
+        assert room["room_type"] == "private"
+        assert room["peer"]["id"] == e_joker["id"]
+
+        same_room_resp = await e_client.post(f"/api/chat/private/{i_joker['id']}")
+        assert same_room_resp.status_code == 200, same_room_resp.text
+        assert same_room_resp.json()["id"] == room["id"]
+
+        message_resp = await i_client.post(
+            f"/api/chat/rooms/{room['id']}/messages",
+            json={"content": "hello from unlocked chat"},
+        )
+        assert message_resp.status_code == 200, message_resp.text
+        assert message_resp.json()["content_safe"] == "hello from unlocked chat"
+
+        rate_limited_resp = await i_client.post(
+            f"/api/chat/rooms/{room['id']}/messages",
+            json={"content": "too fast"},
+        )
+        assert rate_limited_resp.status_code == 429, rate_limited_resp.text
+        assert rate_limited_resp.json()["detail"] == "chat_rate_limited"
+
+        messages_resp = await e_client.get(f"/api/chat/rooms/{room['id']}/messages")
+        assert messages_resp.status_code == 200, messages_resp.text
+        messages = messages_resp.json()
+        assert len(messages) == 1
+        assert messages[0]["sender_id"] == i_joker["id"]
+
+        monkeypatch.setattr(services, "CHAT_MESSAGE_MIN_INTERVAL_SECONDS", 0.0)
+        for index in range(205):
+            overflow_resp = await i_client.post(
+                f"/api/chat/rooms/{room['id']}/messages",
+                json={"content": f"overflow {index}"},
+            )
+            assert overflow_resp.status_code == 200, overflow_resp.text
+
+        trimmed_resp = await e_client.get(f"/api/chat/rooms/{room['id']}/messages")
+        assert trimmed_resp.status_code == 200, trimmed_resp.text
+        assert len(trimmed_resp.json()) == 200
+
+
+@pytest.mark.asyncio
+async def test_location_chat_room_is_shared_and_trimmed(monkeypatch: pytest.MonkeyPatch):
+    transport = ASGITransport(app=app)
+    admin_transport = ASGITransport(app=app, client=("127.0.0.1", 12345))
+    async with (
+        AsyncClient(transport=transport, base_url="http://test") as first_client,
+        AsyncClient(transport=transport, base_url="http://test") as second_client,
+        AsyncClient(transport=admin_transport, base_url="http://test") as admin_client,
+    ):
+        first_resp = await first_client.post("/api/jokers", json=joker_payload("Library One", "INFP", "Pisces", "I"))
+        second_resp = await second_client.post("/api/jokers", json=joker_payload("Library Two", "ENFP", "Leo", "E"))
+        assert first_resp.status_code == 200, first_resp.text
+        assert second_resp.status_code == 200, second_resp.text
+        first_joker = first_resp.json()
+        second_joker = second_resp.json()
+
+        locations_resp = await first_client.get("/api/chat/locations")
+        assert locations_resp.status_code == 200, locations_resp.text
+        locations = locations_resp.json()
+        assert "dormitory" in {location["id"] for location in locations}
+
+        room_resp = await first_client.post("/api/chat/location/library")
+        assert room_resp.status_code == 200, room_resp.text
+        room = room_resp.json()
+        assert room["room_type"] == "location"
+        assert room["location_id"] == "library"
+        assert room["peer"] is None
+
+        same_room_resp = await second_client.post("/api/chat/location/library")
+        assert same_room_resp.status_code == 200, same_room_resp.text
+        assert same_room_resp.json()["id"] == room["id"]
+
+        invalid_room_resp = await first_client.post("/api/chat/location/not-a-real-zone")
+        assert invalid_room_resp.status_code == 404, invalid_room_resp.text
+        assert invalid_room_resp.json()["detail"] == "chat_location_not_found"
+
+        first_message_resp = await first_client.post(
+            f"/api/chat/rooms/{room['id']}/messages",
+            json={"content": "图书馆三楼有人吗"},
+        )
+        assert first_message_resp.status_code == 200, first_message_resp.text
+        first_message = first_message_resp.json()
+        assert first_message["sender_id"] == first_joker["id"]
+        assert first_message["sender"]["nickname"] == "Library One"
+
+        limited_resp = await first_client.post(
+            f"/api/chat/rooms/{room['id']}/messages",
+            json={"content": "公共池刷屏"},
+        )
+        assert limited_resp.status_code == 429, limited_resp.text
+
+        second_message_resp = await second_client.post(
+            f"/api/chat/rooms/{room['id']}/messages",
+            json={"content": "我刚到"},
+        )
+        assert second_message_resp.status_code == 200, second_message_resp.text
+        assert second_message_resp.json()["sender"]["id"] == second_joker["id"]
+
+        replay_resp = await first_client.get(f"/api/replay/{first_joker['qr_token']}")
+        assert replay_resp.status_code == 200, replay_resp.text
+        footprints = replay_resp.json()["public_footprints"]
+        assert footprints[0]["location_id"] == "library"
+        assert footprints[0]["location_label"] == "图书馆"
+        assert footprints[0]["content_safe"] == "图书馆三楼有人吗"
+
+        presence_resp = await first_client.get("/api/chat/location/library/presence")
+        assert presence_resp.status_code == 200, presence_resp.text
+        presence = presence_resp.json()
+        assert presence["active_count"] == 2
+        assert {joker["id"] for joker in presence["active_jokers"]} == {first_joker["id"], second_joker["id"]}
+
+        messages_resp = await first_client.get(f"/api/chat/rooms/{room['id']}/messages")
+        assert messages_resp.status_code == 200, messages_resp.text
+        messages = messages_resp.json()
+        assert [message["sender"]["nickname"] for message in messages] == ["Library One", "Library Two"]
+
+        limited_messages_resp = await first_client.get(f"/api/chat/rooms/{room['id']}/messages?limit=1")
+        assert limited_messages_resp.status_code == 200, limited_messages_resp.text
+        assert len(limited_messages_resp.json()) == 1
+        assert limited_messages_resp.json()[0]["sender"]["nickname"] == "Library Two"
+
+        monkeypatch.setattr(services, "CHAT_LOCATION_MESSAGE_MIN_INTERVAL_SECONDS", 0.0)
+        monkeypatch.setattr(services, "CHAT_LOCATION_MESSAGE_LIMIT", 3)
+        for index in range(5):
+            overflow_resp = await first_client.post(
+                f"/api/chat/rooms/{room['id']}/messages",
+                json={"content": f"library overflow {index}"},
+            )
+            assert overflow_resp.status_code == 200, overflow_resp.text
+
+        trimmed_resp = await second_client.get(f"/api/chat/rooms/{room['id']}/messages")
+        assert trimmed_resp.status_code == 200, trimmed_resp.text
+        trimmed = trimmed_resp.json()
+        assert len(trimmed) == 3
+        assert trimmed[-1]["content_safe"] == "library overflow 4"
+
+        admin_login_resp = await admin_client.post(
+            "/api/admin/login",
+            json={"username": "admin", "password": "test-admin-password"},
+        )
+        assert admin_login_resp.status_code == 200, admin_login_resp.text
+
+        admin_stats_resp = await admin_client.get("/api/admin/stats")
+        assert admin_stats_resp.status_code == 200, admin_stats_resp.text
+        assert admin_stats_resp.json()["chat_room_count"] == 1
+        assert admin_stats_resp.json()["chat_message_count"] == 3
+
+        admin_rooms_resp = await admin_client.get("/api/admin/chat/rooms")
+        assert admin_rooms_resp.status_code == 200, admin_rooms_resp.text
+        admin_rooms = admin_rooms_resp.json()
+        assert admin_rooms[0]["location_id"] == "library"
+        assert admin_rooms[0]["message_count"] == 3
+        assert admin_rooms[0]["recent_messages"]
+
+        delete_message_resp = await admin_client.delete(
+            f"/api/admin/chat/messages/{admin_rooms[0]['recent_messages'][-1]['id']}"
+        )
+        assert delete_message_resp.status_code == 200, delete_message_resp.text
+        assert delete_message_resp.json()["chat_messages"] == 1
+
+        after_delete_resp = await second_client.get(f"/api/chat/rooms/{room['id']}/messages")
+        assert after_delete_resp.status_code == 200, after_delete_resp.text
+        assert len(after_delete_resp.json()) == 2
+
+        empty_room_resp = await first_client.post("/api/chat/location/dormitory")
+        assert empty_room_resp.status_code == 200, empty_room_resp.text
+        empty_room = empty_room_resp.json()
+        async with SessionLocal() as session:
+            room_model = await session.get(ChatRoom, empty_room["id"])
+            assert room_model is not None
+            room_model.created_at = services.now_utc() - timedelta(days=8)
+            await session.commit()
+            deleted_count = await services.ChatService(session).cleanup_stale_location_rooms()
+            assert deleted_count == 1
+            assert await session.get(ChatRoom, empty_room["id"]) is None
+            assert await session.get(ChatRoom, room["id"]) is not None

@@ -1,4 +1,5 @@
 import { Clock, Share2, Sparkles } from "lucide-react";
+import { RelationshipChatButton } from "@/components/chat/RelationshipChatButton";
 import { ParkExperiencePanel } from "@/components/home/ParkExperiencePanel";
 import { PixelAvatarBadge } from "@/components/pixel/PixelAvatarBadge";
 import { QRCodeBox } from "@/components/QRCodeBox";
@@ -103,8 +104,22 @@ export default async function ReplayPage({ params }: { params: Promise<{ token: 
             {replay.relationships.length === 0 ? <p className="helper">还没有形成稳定的接力关系。</p> : null}
             {replay.relationships.map((relationship) => (
               <div className="event-row" key={relationship.joker.id}>
-                <strong>{jokerName(relationship.joker)} · 亲密度 {relationship.affinity_score}</strong>
+                <div className="replay-relationship-row">
+                  <strong>{jokerName(relationship.joker)} · 亲密度 {relationship.affinity_score}</strong>
+                  <RelationshipChatButton replayJoker={replay.joker} peer={relationship.joker} unlocked={relationship.chat_unlocked} />
+                </div>
                 <span>{relationship.interaction_count} 次气球回应接力</span>
+              </div>
+            ))}
+          </div>
+          <div className="task-panel">
+            <h3>公共足迹</h3>
+            {replay.public_footprints.length === 0 ? <p className="helper">这只小丑还没有在公共聊天池留下发言。</p> : null}
+            {replay.public_footprints.map((footprint) => (
+              <div className="event-row" key={footprint.id}>
+                <strong>{footprint.location_label}</strong>
+                <span>{footprint.content_safe || ""}</span>
+                <span className="event-meta">{replyTime(footprint.created_at)}</span>
               </div>
             ))}
           </div>

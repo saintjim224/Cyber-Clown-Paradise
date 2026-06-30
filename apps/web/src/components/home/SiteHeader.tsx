@@ -21,7 +21,7 @@ export function SiteHeader({ joker = null, faceQuality = "fallback" }: SiteHeade
         <Link href="/">首页</Link>
         <Link href="/workshop">灵魂工坊</Link>
         <Link href="/map">校园地图</Link>
-        <Link href="/park">乐园直播</Link>
+        <Link href="/park">社交广场</Link>
       </nav>
       <span className="status-pill">
         <Activity size={16} aria-hidden />

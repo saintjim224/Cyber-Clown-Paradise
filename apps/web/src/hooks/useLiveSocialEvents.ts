@@ -1,11 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Balloon, HealAction, Joker, MatchResult } from "@/lib/api";
+import { apiFetch, type AvatarRecipe, type Balloon, type HealAction, type Joker, type MatchResult } from "@/lib/api";
 import { getClownAssets } from "@/lib/clownAssets";
 import {
-  demoClowns,
-  demoEvents,
   liangjiangMapImage,
   liangjiangPois,
   type DemoClown,
@@ -35,6 +33,7 @@ type UseLiveSocialEventsResult = {
   clowns: DemoClown[];
   events: SocialEvent[];
   activeEvent: SocialEvent | null;
+  rosterLoaded: boolean;
   joinPark: () => DemoClown;
   joinWave: (count?: number) => DemoClown[];
   dropBalloon: (options: DropBalloonOptions) => SocialEvent;
@@ -186,18 +185,44 @@ function makeJoinClown(index: number): DemoClown {
   };
 }
 
+function makeFallbackAvatarRecipe(joker: Joker, index: number): AvatarRecipe {
+  const [primary, accent] = palette[index % palette.length];
+  const paletteTokens = joker.style_tokens?.palette ?? {
+    primary,
+    secondary: joker.social_energy === "I" ? "#2c67c7" : "#ff5f8f",
+    accent
+  };
+
+  return {
+    art_version: "native-clown-v1",
+    palette: paletteTokens,
+    head_scale: joker.social_energy === "I" ? 0.96 : 1.08,
+    body_scale: joker.social_energy === "I" ? 0.94 : 1.04,
+    eye_spacing: 0.42 + index % 4 * 0.08,
+    eye_size: joker.social_energy === "I" ? 0.48 : 0.62,
+    nose_scale: 0.46 + index % 3 * 0.12,
+    cheek_scale: joker.social_energy === "I" ? 0.52 : 0.72,
+    mouth_width: joker.social_energy === "I" ? 0.42 : 0.7,
+    hat_height: 0.45 + index % 5 * 0.08,
+    hat_tilt: 0.36 + index % 5 * 0.07,
+    motion_style: joker.style_tokens?.motion ?? "gentle-float",
+    material: joker.style_tokens?.material ?? "soft-vinyl"
+  };
+}
+
 function makeJokerClown(joker: Joker, index: number): DemoClown {
   const paletteTokens = joker.style_tokens?.palette;
+  const avatarRecipe = joker.avatar_recipe ?? makeFallbackAvatarRecipe(joker, index);
   const spawnPoi = jokerSpawnPoi(joker);
   const offsetSeed = `${joker.id}:${joker.desired_poi_id ?? spawnPoi.id}`;
   const sampleLine = joker.soul_profile?.sample_lines?.[0] ?? joker.verdict;
 
   return {
     id: joker.id,
-    name: joker.nickname || `${joker.social_energy} 人小丑`,
+    name: joker.nickname || `${joker.mbti} 小丑`,
     role: joker.social_energy === "I" ? "低压游园" : "主动破冰",
     energy: joker.social_energy,
-    status: "刚从灵魂工坊进入两江校区",
+    status: "来自数据库的小丑形象",
     line: sampleLine,
     catchphrase: joker.soul_profile?.catchphrase ?? sampleLine,
     homePoiId: spawnPoi.id,
@@ -206,11 +231,31 @@ function makeJokerClown(joker: Joker, index: number): DemoClown {
     mapPoint: stableOffsetMapPoint(spawnPoi.mapPoint, offsetSeed),
     color: paletteTokens?.primary ?? palette[index % palette.length][0],
     accent: paletteTokens?.accent ?? palette[index % palette.length][1],
-    image: joker.avatar_recipe?.preview_url,
-    spriteUrl: joker.avatar_recipe?.sprite_url,
-    frameSize: joker.avatar_recipe?.frame_size,
-    spriteActions: joker.avatar_recipe?.actions
+    image: avatarRecipe?.preview_url,
+    spriteUrl: avatarRecipe?.sprite_url,
+    frameSize: avatarRecipe?.frame_size,
+    spriteActions: avatarRecipe?.actions,
+    avatarRecipe
   };
+}
+
+function makeRosterEvents(clowns: DemoClown[]): SocialEvent[] {
+  return clowns.slice(0, 18).map((clown, index) => {
+    const poi = nearestPoi(clown.position);
+    return {
+      id: `roster-${clown.id}`,
+      title: index === 0 ? "数据库小丑入园" : "小丑形象同步",
+      from: clown.id,
+      poiId: poi.id,
+      summary: `${clown.name} 已从数据库同步到乐园地图。`,
+      type: index % 3 === 0 ? "wave" : index % 3 === 1 ? "cheer" : "walk",
+      moodDelta: 1 + index % 3,
+      createdAt: nowIso(),
+      status: index === 0 ? "live" : "done",
+      path: [clown.position, poi.position],
+      mapPath: [clown.mapPoint, poi.mapPoint]
+    };
+  });
 }
 
 function refreshJokerClown(existing: DemoClown, joker: Joker, index: number): DemoClown {
@@ -256,7 +301,7 @@ function makeReplyEvents(
     ...currentEvent,
     to: responder.id,
     title: currentEvent.type === "balloon" ? "气球被接住" : "接力回应",
-    summary: `${responder.name}回应：“${line}”`,
+    summary: `${responder.name} 回应：“${line}”`,
     type: "reply",
     moodDelta: currentEvent.moodDelta + 2,
     createdAt: nowIso(),
@@ -270,7 +315,7 @@ function makeReplyEvents(
     from: responder.id,
     to: currentEvent.from,
     poiId: currentEvent.poiId,
-    summary: `${responder.name}把这次回应放进回放墙。`,
+    summary: `${responder.name} 把这次回应放进回放墙。`,
     type: "gift",
     moodDelta: 1,
     createdAt: nowIso(),
@@ -283,9 +328,10 @@ function makeReplyEvents(
 }
 
 export function useLiveSocialEvents(): UseLiveSocialEventsResult {
-  const [clowns, setClowns] = useState<DemoClown[]>(demoClowns);
-  const [events, setEvents] = useState<SocialEvent[]>(demoEvents);
-  const [activeEventId, setActiveEventId] = useState(demoEvents.find((event) => event.status === "live")?.id ?? demoEvents[0]?.id ?? "");
+  const [clowns, setClowns] = useState<DemoClown[]>([]);
+  const [events, setEvents] = useState<SocialEvent[]>([]);
+  const [activeEventId, setActiveEventId] = useState("");
+  const [rosterLoaded, setRosterLoaded] = useState(false);
   const clownsRef = useRef(clowns);
   const eventsRef = useRef(events);
   const joinedCountRef = useRef(0);
@@ -298,6 +344,38 @@ export function useLiveSocialEvents(): UseLiveSocialEventsResult {
   useEffect(() => {
     eventsRef.current = events;
   }, [events]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadJokerRoster() {
+      try {
+        const jokers = await apiFetch<Joker[]>("/api/park/jokers");
+        if (cancelled) return;
+        const rosterClowns = jokers.map((joker, index) => makeJokerClown(joker, index));
+        const rosterEvents = makeRosterEvents(rosterClowns);
+        clownsRef.current = rosterClowns;
+        eventsRef.current = rosterEvents;
+        setClowns(rosterClowns);
+        setEvents(rosterEvents);
+        setActiveEventId(rosterEvents.find((event) => event.status === "live")?.id ?? rosterEvents[0]?.id ?? "");
+      } catch {
+        if (!cancelled) {
+          setClowns([]);
+          setEvents([]);
+          setActiveEventId("");
+        }
+      } finally {
+        if (!cancelled) setRosterLoaded(true);
+      }
+    }
+
+    void loadJokerRoster();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const focusEvent = useCallback((eventId: string) => {
     setActiveEventId(eventId);
@@ -314,7 +392,7 @@ export function useLiveSocialEvents(): UseLiveSocialEventsResult {
       title: "专属小丑入园",
       from: clown.id,
       poiId: poi.id,
-      summary: `${clown.name}从灵魂工坊进入两江校区，先做了一段专属动作。`,
+      summary: `${clown.name} 从灵魂工坊进入两江校区，先做了一段专属动作。`,
       type: "wave",
       moodDelta: 2,
       createdAt: nowIso(),
@@ -406,7 +484,7 @@ export function useLiveSocialEvents(): UseLiveSocialEventsResult {
       title: "新朋友入园",
       from: clown.id,
       poiId: poi.id,
-      summary: `${clown.name}从${poi.label}加入，先挥了挥手。`,
+      summary: `${clown.name} 从 ${poi.label} 加入，先挥了挥手。`,
       type: "wave",
       moodDelta: 1,
       createdAt: nowIso(),
@@ -438,9 +516,9 @@ export function useLiveSocialEvents(): UseLiveSocialEventsResult {
         title: index === 0 ? "一队小丑入园" : "现场人流加入",
         from: clown.id,
         poiId: poi.id,
-        summary: `${clown.name}从${poi.label}加入，现场热度升了一格。`,
+        summary: `${clown.name} 从 ${poi.label} 加入，现场热度升了一格。`,
         type: index % 2 === 0 ? "wave" : "cheer",
-        moodDelta: 1 + (index % 2),
+        moodDelta: 1 + index % 2,
         createdAt: nowIso(),
         status: index === 0 ? "live" : "done",
         path: [clown.position, poi.position],
@@ -469,15 +547,15 @@ export function useLiveSocialEvents(): UseLiveSocialEventsResult {
     const event: SocialEvent = {
       id: options.balloon?.id ?? makeId("balloon"),
       title: `${options.mood}气球`,
-      from: sender.id,
+      from: sender?.id ?? options.senderId ?? "unknown-joker",
       poiId: poi.id,
-      summary: `${sender.name}投放：“${options.balloon?.safe_summary ?? text}”`,
+      summary: `${sender?.name ?? "现场小丑"} 投放：“${options.balloon?.safe_summary ?? text}”`,
       type: "balloon",
       moodDelta: 1,
       createdAt: nowIso(),
       status: "waiting",
-      path: [sender.position, poi.position],
-      mapPath: [sender.mapPoint, poi.mapPoint]
+      path: sender ? [sender.position, poi.position] : [poi.position],
+      mapPath: sender ? [sender.mapPoint, poi.mapPoint] : [poi.mapPoint]
     };
 
     setEvents((current) => withBoundedEvents([...current, event]));
@@ -497,7 +575,7 @@ export function useLiveSocialEvents(): UseLiveSocialEventsResult {
       title: "待接力气球",
       from: match.owner_id,
       poiId: poi.id,
-      summary: owner ? `${owner.name}投放了一颗气球，等待接力回应。` : match.prompt,
+      summary: owner ? `${owner.name} 投放了一颗气球，等待接力回应。` : match.prompt,
       type: "balloon",
       moodDelta: 1,
       createdAt: nowIso(),
@@ -603,7 +681,7 @@ export function useLiveSocialEvents(): UseLiveSocialEventsResult {
         poiId: poi.id,
         summary: randomItem(tickLines),
         type: randomItem(tickTypes),
-        moodDelta: 1 + (tickCountRef.current % 3),
+        moodDelta: 1 + tickCountRef.current % 3,
         createdAt: nowIso(),
         status: "live",
         path: [from.position, offsetPosition(poi.position, 0.00016), to.position],
@@ -628,6 +706,7 @@ export function useLiveSocialEvents(): UseLiveSocialEventsResult {
     clowns,
     events,
     activeEvent,
+    rosterLoaded,
     joinPark,
     joinWave,
     dropBalloon,

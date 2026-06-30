@@ -123,8 +123,8 @@ function eventBubbleContent(event: SocialEvent) {
 function addControlSafely(map: AMapMap, makeControl: () => unknown) {
   try {
     map.addControl(makeControl());
-  } catch (error) {
-    console.warn("AMap control skipped", error);
+  } catch {
+    // AMap controls are optional; older SDK builds can omit one without breaking the map.
   }
 }
 

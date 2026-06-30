@@ -1,3 +1,5 @@
+import type { AvatarRecipe } from "@/lib/api";
+
 export type LngLatTuple = [number, number];
 export type ImagePointTuple = [number, number];
 
@@ -35,6 +37,7 @@ export type DemoClown = {
   spriteUrl?: string;
   frameSize?: number;
   spriteActions?: Record<string, { start: number; frames: number; fps: number }>;
+  avatarRecipe?: AvatarRecipe | null;
 };
 
 export type LiangjiangPoi = {
@@ -44,6 +47,24 @@ export type LiangjiangPoi = {
   note: string;
   position: LngLatTuple;
   mapPoint: ImagePointTuple;
+};
+
+export type ChatZoneIcon = "school" | "utensils" | "book" | "activity" | "tree" | "theater" | "bus" | "home";
+
+export type ChatZoneBounds = {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+};
+
+export type ChatZone = {
+  id: string;
+  label: string;
+  note: string;
+  icon: ChatZoneIcon;
+  anchor: ImagePointTuple;
+  bounds: ChatZoneBounds[];
 };
 
 const demoClownFrameSize = 256;
@@ -319,6 +340,104 @@ export const liangjiangPois: LiangjiangPoi[] = [
     mapPoint: [1336, 648]
   }
 ];
+
+export const liangjiangChatZones: ChatZone[] = [
+  {
+    id: "academic-plaza",
+    label: "教学楼广场",
+    note: "致知、笃行、敬业、勤业一带的学习楼群公共频道。",
+    icon: "school",
+    anchor: [840, 250],
+    bounds: [{ x1: 560, y1: 110, x2: 1110, y2: 370 }]
+  },
+  {
+    id: "canteen",
+    label: "食堂",
+    note: "北苑、西苑、东苑食堂共享的吃饭碰头频道。",
+    icon: "utensils",
+    anchor: [1214, 127],
+    bounds: [
+      { x1: 1120, y1: 70, x2: 1320, y2: 220 },
+      { x1: 280, y1: 120, x2: 500, y2: 280 },
+      { x1: 190, y1: 500, x2: 390, y2: 650 }
+    ]
+  },
+  {
+    id: "dormitory",
+    label: "宿舍区",
+    note: "北苑、西苑、东苑宿舍共享的夜间回访频道。",
+    icon: "home",
+    anchor: [1408, 159],
+    bounds: [
+      { x1: 1190, y1: 40, x2: 1545, y2: 215 },
+      { x1: 360, y1: 0, x2: 600, y2: 150 },
+      { x1: 220, y1: 350, x2: 440, y2: 490 }
+    ]
+  },
+  {
+    id: "library",
+    label: "图书馆",
+    note: "图书馆与三楼自习区的安静聊天池。",
+    icon: "book",
+    anchor: [608, 488],
+    bounds: [{ x1: 500, y1: 390, x2: 720, y2: 590 }]
+  },
+  {
+    id: "sports-field",
+    label: "运动场",
+    note: "南北运动场和北苑操场的加油频道。",
+    icon: "activity",
+    anchor: [1424, 276],
+    bounds: [
+      { x1: 1280, y1: 180, x2: 1540, y2: 550 },
+      { x1: 40, y1: 0, x2: 310, y2: 170 }
+    ]
+  },
+  {
+    id: "central-garden",
+    label: "中心花园",
+    note: "毓秀湖、罗马广场之间的低压散步频道。",
+    icon: "tree",
+    anchor: [860, 520],
+    bounds: [{ x1: 720, y1: 370, x2: 1010, y2: 680 }]
+  },
+  {
+    id: "clown-theater",
+    label: "小丑剧场",
+    note: "生活活动中心附近的演出、回放和热闹集合频道。",
+    icon: "theater",
+    anchor: [1140, 650],
+    bounds: [{ x1: 1040, y1: 560, x2: 1280, y2: 740 }]
+  },
+  {
+    id: "bus-stop",
+    label: "校车站",
+    note: "中门、北门和小北门的来去集合频道。",
+    icon: "bus",
+    anchor: [767, 768],
+    bounds: [
+      { x1: 660, y1: 690, x2: 880, y2: 850 },
+      { x1: 1180, y1: 760, x2: 1380, y2: 900 },
+      { x1: 1480, y1: 690, x2: 1640, y2: 830 },
+      { x1: 0, y1: 600, x2: 140, y2: 760 }
+    ]
+  }
+];
+
+export function pointInChatZone(point: ImagePointTuple, zone: ChatZone) {
+  return zone.bounds.some(
+    (bounds) =>
+      point[0] >= bounds.x1 &&
+      point[0] <= bounds.x2 &&
+      point[1] >= bounds.y1 &&
+      point[1] <= bounds.y2
+  );
+}
+
+export function chatZoneForPoint(point: ImagePointTuple | null | undefined) {
+  if (!point) return null;
+  return liangjiangChatZones.find((zone) => pointInChatZone(point, zone)) ?? null;
+}
 
 export const demoClowns: DemoClown[] = [
   {

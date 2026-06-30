@@ -152,9 +152,19 @@ export type Replay = {
   received_replies: ReplyRecord[];
   sent_replies: ReplyRecord[];
   relationships: RelationshipRecord[];
+  public_footprints: PublicFootprint[];
   energy_score: number;
   headline: string;
   share_text: string;
+};
+
+export type PublicFootprint = {
+  id: string;
+  room_id: string;
+  location_id: string;
+  location_label: string;
+  content_safe: string | null;
+  created_at: string;
 };
 
 export type ReplyRecord = {
@@ -179,6 +189,100 @@ export type RelationshipRecord = {
   interaction_count: number;
   last_action_id: string | null;
   updated_at: string;
+  chat_unlocked: boolean;
+  chat_room_id: string | null;
+};
+
+export type ChatMessage = {
+  id: string;
+  room_id: string;
+  sender_id: string;
+  sender: JokerBrief | null;
+  content_safe: string | null;
+  created_at: string;
+};
+
+export type ChatRoom = {
+  id: string;
+  room_type: "private" | "location" | string;
+  joker_a_id: string | null;
+  joker_b_id: string | null;
+  location_id: string | null;
+  created_at: string;
+  last_message_at: string | null;
+  peer: JokerBrief | null;
+};
+
+export type ChatLocation = {
+  id: string;
+  label: string;
+  note: string;
+};
+
+export type ChatLocationPresence = {
+  location_id: string;
+  room_id: string | null;
+  active_count: number;
+  active_jokers: JokerBrief[];
+};
+
+export type AdminSession = {
+  username: string;
+  role: "admin" | "super_admin" | string;
+  is_super_admin: boolean;
+  host: string | null;
+  expires_in_seconds: number;
+};
+
+export type AdminStats = {
+  joker_count: number;
+  user_session_count: number;
+  balloon_count: number;
+  pending_balloon_count: number;
+  healed_balloon_count: number;
+  heal_action_count: number;
+  event_count: number;
+  avatar_job_count: number;
+  media_asset_count: number;
+  moderation_log_count: number;
+  chat_room_count: number;
+  chat_message_count: number;
+};
+
+export type AdminJoker = {
+  id: string;
+  owner_session_id: string | null;
+  nickname: string | null;
+  mbti: string;
+  constellation: string;
+  social_energy: "I" | "E" | string;
+  persona: string;
+  verdict: string;
+  qr_token: string;
+  avatar_status: string | null;
+  energy_score: number;
+  created_at: string;
+  updated_at: string;
+  balloon_count: number;
+  action_count: number;
+  event_count: number;
+};
+
+export type AdminDeleteResult = {
+  joker_id: string;
+  deleted_counts: Record<string, number>;
+};
+
+export type AdminChatRoom = {
+  id: string;
+  room_type: string;
+  location_id: string | null;
+  joker_a_id: string | null;
+  joker_b_id: string | null;
+  created_at: string;
+  last_message_at: string | null;
+  message_count: number;
+  recent_messages: ChatMessage[];
 };
 
 export type ClownVoteSummaryItem = {
@@ -197,6 +301,17 @@ function currentSiteOrigin() {
   return "";
 }
 
+function apiErrorMessage(response: Response, text: string) {
+  if (!text) return `Request failed: ${response.status}`;
+  try {
+    const payload = JSON.parse(text) as { detail?: unknown };
+    if (typeof payload.detail === "string") return payload.detail;
+  } catch {
+    // Fall back to the raw response text.
+  }
+  return text;
+}
+
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
@@ -209,18 +324,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   });
   if (!response.ok) {
     const text = await response.text();
-    let message = text;
-    if (text) {
-      try {
-        const parsed = JSON.parse(text) as { detail?: unknown };
-        if (typeof parsed.detail === "string") {
-          message = parsed.detail;
-        }
-      } catch {
-        // Fall back to the raw response text for non-JSON errors.
-      }
-    }
-    throw new Error(message || `Request failed: ${response.status}`);
+    throw new Error(apiErrorMessage(response, text));
   }
   return response.json() as Promise<T>;
 }
@@ -235,4 +339,9 @@ export function parkEntryUrl(token: string) {
   const path = `/park/join/${token}`;
   const origin = currentSiteOrigin();
   return origin ? `${origin}${path}` : path;
+}
+
+export function apiWebSocketUrl(path: string) {
+  const base = API_BASE.replace(/^http:/, "ws:").replace(/^https:/, "wss:");
+  return `${base}${path}`;
 }

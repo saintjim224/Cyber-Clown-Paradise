@@ -51,6 +51,10 @@ function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
 
+function shouldZoomWithWheel(event: WheelEvent<HTMLDivElement>) {
+  return event.ctrlKey || event.deltaMode !== 0 || Math.abs(event.deltaY) >= 40;
+}
+
 function eventToTile(event: ParkEvent | undefined, map: CampusPixelMap) {
   const lastPoint = event?.position_path?.[event.position_path.length - 1];
   if (!lastPoint) return { x: Math.floor(map.width / 2), y: Math.floor(map.height / 2) };
@@ -104,6 +108,7 @@ export function PixelCampusMap({
 
   function handleWheel(event: WheelEvent<HTMLDivElement>) {
     if (!explorer) return;
+    if (!shouldZoomWithWheel(event)) return;
     event.preventDefault();
     changeZoom(event.deltaY > 0 ? -0.12 : 0.12);
   }
