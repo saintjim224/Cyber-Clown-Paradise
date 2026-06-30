@@ -3,6 +3,33 @@ import { z } from "zod";
 export const socialEnergySchema = z.enum(["I", "E"]);
 export type SocialEnergy = z.infer<typeof socialEnergySchema>;
 
+export const liangjiangPoiIdSchema = z.enum([
+  "lj-main-gate",
+  "lj-south-gate",
+  "lj-north-gate",
+  "lj-small-north-gate",
+  "lj-library",
+  "lj-zhizhi-building",
+  "lj-duxing-building",
+  "lj-jingye-building",
+  "lj-qinye-building",
+  "lj-boxue-building",
+  "lj-roman-square",
+  "lj-north-dorm",
+  "lj-west-dorm",
+  "lj-east-dorm",
+  "lj-north-sport-field",
+  "lj-south-sport-field",
+  "lj-north-playground",
+  "lj-north-canteen",
+  "lj-west-canteen",
+  "lj-east-canteen",
+  "lj-yuxiu-lake",
+  "lj-activity-center",
+  "lj-school-hospital",
+]);
+export type LiangjiangPoiId = z.infer<typeof liangjiangPoiIdSchema>;
+
 export const faceDescriptorSchema = z.object({
   face_roundness: z.number().min(0).max(1),
   eye_spacing: z.number().min(0).max(1),
@@ -68,6 +95,7 @@ export const jokerCreateSchema = z.object({
   mbti: z.string().min(4).max(4),
   constellation: z.string().min(1).max(16),
   social_energy: socialEnergySchema,
+  desired_poi_id: liangjiangPoiIdSchema,
   consent_media: z.boolean().default(false),
   soul_seed: z.string().max(700).optional(),
   soul_profile: soulProfileSchema.optional(),
@@ -116,6 +144,7 @@ export const jokerSchema = z.object({
   mbti: z.string(),
   constellation: z.string(),
   social_energy: socialEnergySchema,
+  desired_poi_id: liangjiangPoiIdSchema.nullable(),
   persona: z.string(),
   verdict: z.string(),
   qr_token: z.string(),

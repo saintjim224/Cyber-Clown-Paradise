@@ -1,6 +1,34 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+LiangjiangPoiId = Literal[
+    "lj-main-gate",
+    "lj-south-gate",
+    "lj-north-gate",
+    "lj-small-north-gate",
+    "lj-library",
+    "lj-zhizhi-building",
+    "lj-duxing-building",
+    "lj-jingye-building",
+    "lj-qinye-building",
+    "lj-boxue-building",
+    "lj-roman-square",
+    "lj-north-dorm",
+    "lj-west-dorm",
+    "lj-east-dorm",
+    "lj-north-sport-field",
+    "lj-south-sport-field",
+    "lj-north-playground",
+    "lj-north-canteen",
+    "lj-west-canteen",
+    "lj-east-canteen",
+    "lj-yuxiu-lake",
+    "lj-activity-center",
+    "lj-school-hospital",
+]
 
 
 class StyleTokens(BaseModel):
@@ -81,6 +109,7 @@ class JokerCreate(BaseModel):
     mbti: str = Field(min_length=4, max_length=4)
     constellation: str = Field(min_length=1, max_length=16)
     social_energy: str = Field(pattern="^[IE]$")
+    desired_poi_id: LiangjiangPoiId
     consent_media: bool = False
     soul_seed: str | None = Field(default=None, max_length=700)
     soul_profile: SoulProfile | None = None
@@ -96,6 +125,7 @@ class JokerOut(BaseModel):
     mbti: str
     constellation: str
     social_energy: str
+    desired_poi_id: str | None = None
     persona: str
     verdict: str
     qr_token: str
@@ -136,6 +166,7 @@ class BalloonOut(BaseModel):
 
 class MatchRequest(BaseModel):
     action_type: str = Field(default="hug", pattern="^(hug|pet|cheer|dance)$")
+    target_owner_id: str | None = Field(default=None, min_length=1, max_length=32)
 
 
 class MatchOut(BaseModel):
@@ -220,6 +251,25 @@ class PublicFootprintOut(BaseModel):
     location_label: str
     content_safe: str | None
     created_at: datetime
+
+
+class ClownVoteSummaryRequest(BaseModel):
+    clown_ids: list[str] = Field(default_factory=list, max_length=80)
+
+
+class ClownVoteToggleRequest(BaseModel):
+    clown_id: str = Field(min_length=1, max_length=96)
+    current_clown_ids: list[str] = Field(default_factory=list, max_length=80)
+
+
+class ClownVoteSummaryItem(BaseModel):
+    clown_id: str
+    votes: int
+
+
+class ClownVoteSummaryOut(BaseModel):
+    items: list[ClownVoteSummaryItem]
+    voted_clown_id: str | None = None
 
 
 class ReplayOut(BaseModel):

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiFetch, type AvatarRecipe, type Balloon, type HealAction, type Joker, type MatchResult } from "@/lib/api";
+import { getClownAssets } from "@/lib/clownAssets";
 import {
   liangjiangMapImage,
   liangjiangPois,
@@ -41,10 +42,20 @@ type UseLiveSocialEventsResult = {
   replyWaitingBalloons: () => void;
   focusEvent: (eventId: string) => void;
   addJokerToPark: (joker: Joker) => DemoClown;
+  syncParkJokers: (jokers: Joker[]) => DemoClown[];
+  syncPendingBalloons: (balloons: Balloon[]) => SocialEvent[];
 };
 
 const nicknames = ["纸杯礼帽", "红鼻便利贴", "星星鞋带", "汽水泡泡", "午后鼓点", "薄荷口哨", "奶油信封", "像素风筝"];
 const roles = ["气球投手", "接力回应", "低压搭话", "路线观察", "回放记录", "掌声补给"];
+const catchphrases = [
+  "我先把尴尬打个蝴蝶结。",
+  "别急，今天先赢一厘米。",
+  "坏运气排队，我先插个队。",
+  "我替你挥手，不替你越界。",
+  "接住这句，电量慢慢回来。",
+  "先别慌，我把沉默折成气球。"
+];
 const palette = [
   ["#e23d2f", "#ffd84a"],
   ["#2c67c7", "#9be36d"],
@@ -72,8 +83,25 @@ function randomItem<T>(items: readonly T[]) {
   return items[Math.floor(Math.random() * items.length)];
 }
 
+function stableHash(value: string) {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
+}
+
+function stableUnit(seed: string, salt: number) {
+  return stableHash(`${seed}:${salt}`) / 0xffffffff;
+}
+
 function poiById(id: string): LiangjiangPoi {
   return liangjiangPois.find((poi) => poi.id === id) ?? liangjiangPois[0];
+}
+
+function findPoiById(id: string | null | undefined): LiangjiangPoi | undefined {
+  return id ? liangjiangPois.find((poi) => poi.id === id) : undefined;
 }
 
 function nowIso() {
@@ -94,6 +122,20 @@ function offsetPosition(position: LngLatTuple, scale = 0.00018): LngLatTuple {
   ];
 }
 
+function stableOffsetMapPoint(point: ImagePointTuple, seed: string, scale = 20): ImagePointTuple {
+  return [
+    Math.max(24, Math.min(liangjiangMapImage.width - 24, Math.round(point[0] + (stableUnit(seed, 1) - 0.5) * scale))),
+    Math.max(24, Math.min(liangjiangMapImage.height - 24, Math.round(point[1] + (stableUnit(seed, 2) - 0.5) * scale)))
+  ];
+}
+
+function stableOffsetPosition(position: LngLatTuple, seed: string, scale = 0.00008): LngLatTuple {
+  return [
+    Number((position[0] + (stableUnit(seed, 3) - 0.5) * scale).toFixed(6)),
+    Number((position[1] + (stableUnit(seed, 4) - 0.5) * scale).toFixed(6))
+  ];
+}
+
 function nearestPoi(position: LngLatTuple): LiangjiangPoi {
   return liangjiangPois.reduce((nearest, poi) => {
     const bestDistance = Math.hypot(nearest.position[0] - position[0], nearest.position[1] - position[1]);
@@ -102,10 +144,25 @@ function nearestPoi(position: LngLatTuple): LiangjiangPoi {
   }, poiById("lj-main-gate"));
 }
 
+function defaultJokerPoi(joker: Joker): LiangjiangPoi {
+  return joker.social_energy === "I" ? poiById("lj-yuxiu-lake") : poiById("lj-roman-square");
+}
+
+function jokerSpawnPoi(joker: Joker): LiangjiangPoi {
+  return findPoiById(joker.desired_poi_id) ?? defaultJokerPoi(joker);
+}
+
+function clownHomePoi(clown: DemoClown): LiangjiangPoi {
+  return findPoiById(clown.homePoiId) ?? nearestPoi(clown.position);
+}
+
 function makeJoinClown(index: number): DemoClown {
   const [color, accent] = palette[index % palette.length];
   const energy = randomItem<Energy>(["I", "E", "A"]);
   const spawnPoi = randomItem([poiById("lj-main-gate"), poiById("lj-roman-square"), poiById("lj-north-canteen")]);
+  const assetPool = energy === "I" ? "I" : "E";
+  const asset = randomItem(getClownAssets(assetPool));
+  const catchphrase = randomItem(catchphrases);
 
   return {
     id: `guest-clown-${Date.now()}-${index}`,
@@ -114,11 +171,17 @@ function makeJoinClown(index: number): DemoClown {
     energy,
     status: "刚进园，正在找第一颗气球",
     line: energy === "I" ? "我先在旁边看一会儿。" : "我可以先替你挥手。",
+    catchphrase,
+    homePoiId: spawnPoi.id,
     action: "加入两江校区实时游园",
     position: offsetPosition(spawnPoi.position, 0.00026),
     mapPoint: offsetMapPoint(spawnPoi.mapPoint, 36),
     color,
-    accent
+    accent,
+    image: asset?.preview_url,
+    spriteUrl: asset?.sprite_url,
+    frameSize: asset?.frame_size,
+    spriteActions: asset?.actions
   };
 }
 
@@ -150,10 +213,8 @@ function makeFallbackAvatarRecipe(joker: Joker, index: number): AvatarRecipe {
 function makeJokerClown(joker: Joker, index: number): DemoClown {
   const paletteTokens = joker.style_tokens?.palette;
   const avatarRecipe = joker.avatar_recipe ?? makeFallbackAvatarRecipe(joker, index);
-  const spawnPois = joker.social_energy === "I"
-    ? [poiById("lj-yuxiu-lake"), poiById("lj-library"), poiById("lj-north-dorm")]
-    : [poiById("lj-roman-square"), poiById("lj-north-sport-field"), poiById("lj-main-gate")];
-  const spawnPoi = spawnPois[index % spawnPois.length];
+  const spawnPoi = jokerSpawnPoi(joker);
+  const offsetSeed = `${joker.id}:${joker.desired_poi_id ?? spawnPoi.id}`;
   const sampleLine = joker.soul_profile?.sample_lines?.[0] ?? joker.verdict;
 
   return {
@@ -163,15 +224,17 @@ function makeJokerClown(joker: Joker, index: number): DemoClown {
     energy: joker.social_energy,
     status: "来自数据库的小丑形象",
     line: sampleLine,
-    action: "正在两江校区地图里替用户接力互动",
-    position: offsetPosition(spawnPoi.position, 0.00018 + index * 0.000006),
-    mapPoint: offsetMapPoint(spawnPoi.mapPoint, 52 + index * 5),
+    catchphrase: joker.soul_profile?.catchphrase ?? sampleLine,
+    homePoiId: spawnPoi.id,
+    action: "正在播放自己的专属动作，准备加入实时游园",
+    position: stableOffsetPosition(spawnPoi.position, offsetSeed),
+    mapPoint: stableOffsetMapPoint(spawnPoi.mapPoint, offsetSeed),
     color: paletteTokens?.primary ?? palette[index % palette.length][0],
     accent: paletteTokens?.accent ?? palette[index % palette.length][1],
-    image: joker.avatar_recipe?.preview_url,
-    spriteUrl: joker.avatar_recipe?.sprite_url,
-    frameSize: joker.avatar_recipe?.frame_size,
-    spriteActions: joker.avatar_recipe?.actions,
+    image: avatarRecipe?.preview_url,
+    spriteUrl: avatarRecipe?.sprite_url,
+    frameSize: avatarRecipe?.frame_size,
+    spriteActions: avatarRecipe?.actions,
     avatarRecipe
   };
 }
@@ -193,6 +256,29 @@ function makeRosterEvents(clowns: DemoClown[]): SocialEvent[] {
       mapPath: [clown.mapPoint, poi.mapPoint]
     };
   });
+}
+
+function refreshJokerClown(existing: DemoClown, joker: Joker, index: number): DemoClown {
+  const refreshed = makeJokerClown(joker, index);
+  return {
+    ...existing,
+    name: refreshed.name,
+    role: refreshed.role,
+    energy: refreshed.energy,
+    status: refreshed.status,
+    line: refreshed.line,
+    catchphrase: refreshed.catchphrase,
+    homePoiId: refreshed.homePoiId,
+    action: refreshed.action,
+    position: refreshed.position,
+    mapPoint: refreshed.mapPoint,
+    color: refreshed.color,
+    accent: refreshed.accent,
+    image: refreshed.image,
+    spriteUrl: refreshed.spriteUrl,
+    frameSize: refreshed.frameSize,
+    spriteActions: refreshed.spriteActions
+  };
 }
 
 function withBoundedEvents(events: SocialEvent[]) {
@@ -300,7 +386,7 @@ export function useLiveSocialEvents(): UseLiveSocialEventsResult {
     if (existing) return existing;
 
     const clown = makeJokerClown(joker, clownsRef.current.length + 1);
-    const poi = nearestPoi(clown.position);
+    const poi = clownHomePoi(clown);
     const event: SocialEvent = {
       id: makeId("joker"),
       title: "专属小丑入园",
@@ -326,10 +412,73 @@ export function useLiveSocialEvents(): UseLiveSocialEventsResult {
     return clown;
   }, []);
 
+  const syncParkJokers = useCallback((jokers: Joker[]) => {
+    const incoming = jokers.filter((joker) => joker.id);
+    if (incoming.length === 0) return [];
+
+    const current = clownsRef.current;
+    const byId = new Map(current.map((clown) => [clown.id, clown]));
+    const next = [...current];
+    const added: DemoClown[] = [];
+    let changed = false;
+
+    incoming.forEach((joker, index) => {
+      const existing = byId.get(joker.id);
+      if (existing) {
+        const existingIndex = next.findIndex((clown) => clown.id === joker.id);
+        if (existingIndex >= 0) {
+          next[existingIndex] = refreshJokerClown(existing, joker, current.length + index + 1);
+          changed = true;
+        }
+        return;
+      }
+
+      const clown = makeJokerClown(joker, next.length + 1);
+      next.push(clown);
+      byId.set(clown.id, clown);
+      added.push(clown);
+      changed = true;
+    });
+
+    if (!changed) return [];
+
+    clownsRef.current = next;
+    setClowns(next);
+
+    if (added.length > 0) {
+      const syncEvents = added.slice(0, 4).map((clown, index): SocialEvent => {
+        const poi = clownHomePoi(clown);
+        return {
+          id: makeId(`shared-joker-${index}`),
+          title: index === 0 ? "其他小丑入园" : "共享小丑上线",
+          from: clown.id,
+          poiId: poi.id,
+          summary: `${clown.name}也进入了两江实时游园，正在同步到现场排行榜。`,
+          type: "wave",
+          moodDelta: 1,
+          createdAt: nowIso(),
+          status: index === 0 ? "live" : "done",
+          path: [clown.position, poi.position],
+          mapPath: [clown.mapPoint, poi.mapPoint]
+        };
+      });
+
+      setEvents((currentEvents) =>
+        withBoundedEvents([
+          ...currentEvents.map((item) => (item.status === "live" ? { ...item, status: "done" as const } : item)),
+          ...syncEvents
+        ])
+      );
+      if (syncEvents[0]) setActiveEventId(syncEvents[0].id);
+    }
+
+    return added;
+  }, []);
+
   const joinPark = useCallback(() => {
     joinedCountRef.current += 1;
     const clown = makeJoinClown(joinedCountRef.current);
-    const poi = nearestPoi(clown.position);
+    const poi = clownHomePoi(clown);
     const event: SocialEvent = {
       id: makeId("join"),
       title: "新朋友入园",
@@ -361,7 +510,7 @@ export function useLiveSocialEvents(): UseLiveSocialEventsResult {
       return makeJoinClown(joinedCountRef.current);
     });
     const waveEvents = nextClowns.slice(0, 6).map((clown, index): SocialEvent => {
-      const poi = nearestPoi(clown.position);
+      const poi = clownHomePoi(clown);
       return {
         id: makeId(`wave-${index}`),
         title: index === 0 ? "一队小丑入园" : "现场人流加入",
@@ -441,6 +590,44 @@ export function useLiveSocialEvents(): UseLiveSocialEventsResult {
     return event;
   }, []);
 
+  const syncPendingBalloons = useCallback((balloons: Balloon[]) => {
+    const pending = balloons.filter((balloon) => balloon.status === "pending");
+    const pendingIds = new Set(pending.map((balloon) => balloon.id));
+    const currentEvents = eventsRef.current;
+    const currentIds = new Set(currentEvents.map((event) => event.id));
+    const currentClowns = clownsRef.current;
+    const createdEvents = pending
+      .filter((balloon) => !currentIds.has(balloon.id))
+      .map((balloon): SocialEvent => {
+        const owner = currentClowns.find((clown) => clown.id === balloon.owner_id);
+        const poi = owner ? clownHomePoi(owner) : randomItem([poiById("lj-roman-square"), poiById("lj-yuxiu-lake"), poiById("lj-north-sport-field")]);
+        return {
+          id: balloon.id,
+          title: "待接力气球",
+          from: balloon.owner_id,
+          poiId: poi.id,
+          summary: owner
+            ? `${owner.name}投放了一颗气球：“${balloon.safe_summary}”`
+            : `现场有一颗气球等待回应：“${balloon.safe_summary}”`,
+          type: "balloon",
+          moodDelta: 1,
+          createdAt: nowIso(),
+          status: "waiting",
+          path: owner ? [owner.position, poi.position] : [poi.position],
+          mapPath: owner ? [owner.mapPoint, poi.mapPoint] : [poi.mapPoint]
+        };
+      });
+
+    const keptEvents = currentEvents.filter(
+      (event) => !(event.status === "waiting" && event.id.startsWith("bal_") && !pendingIds.has(event.id))
+    );
+    const nextEvents = withBoundedEvents([...keptEvents, ...createdEvents]);
+    eventsRef.current = nextEvents;
+    setEvents(nextEvents);
+    if (createdEvents[0]) setActiveEventId(createdEvents[0].id);
+    return createdEvents;
+  }, []);
+
   const replyToEvent = useCallback(({ eventId, responderId, match, action }: ReplyOptions) => {
     const currentClowns = clownsRef.current;
     const currentEvent = eventsRef.current.find((event) => event.id === eventId) ??
@@ -485,7 +672,7 @@ export function useLiveSocialEvents(): UseLiveSocialEventsResult {
       const from = randomItem(currentClowns);
       const targetPool = currentClowns.filter((clown) => clown.id !== from.id);
       const to = randomItem(targetPool);
-      const poi = nearestPoi(to.position);
+      const poi = clownHomePoi(to);
       const event: SocialEvent = {
         id: makeId("auto"),
         title: randomItem(tickTitles),
@@ -527,6 +714,8 @@ export function useLiveSocialEvents(): UseLiveSocialEventsResult {
     replyToEvent,
     replyWaitingBalloons,
     focusEvent,
-    addJokerToPark
+    addJokerToPark,
+    syncParkJokers,
+    syncPendingBalloons
   };
 }

@@ -39,6 +39,9 @@ from app.schemas import (
     ChatMessageCreate,
     ChatMessageOut,
     ChatRoomOut,
+    ClownVoteSummaryOut,
+    ClownVoteSummaryRequest,
+    ClownVoteToggleRequest,
     HealActionCreate,
     HealActionOut,
     HealthOut,
@@ -58,6 +61,7 @@ from app.services import (
     AvatarService,
     BalloonService,
     ChatService,
+    ClownVoteService,
     HealService,
     JokerService,
     ReplayService,
@@ -472,7 +476,11 @@ async def match_balloon(
     user_session: UserSession = Depends(get_current_user_session),
 ) -> MatchOut:
     try:
-        return await HealService(session, settings).find_match(user_session.id, payload.action_type)
+        return await HealService(session, settings).find_match(
+            user_session.id,
+            payload.action_type,
+            payload.target_owner_id,
+        )
     except ValueError as exc:
         raise service_error(exc) from exc
 
@@ -533,8 +541,37 @@ async def park_events(session: AsyncSession = Depends(get_session)) -> list[Park
 
 
 @app.get("/api/park/jokers", response_model=list[JokerOut])
-async def park_joker_roster(session: AsyncSession = Depends(get_session)) -> list[JokerOut]:
-    return [JokerOut.model_validate(joker) for joker in await park_jokers(session)]
+async def park_joker_roster(
+    session: AsyncSession = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+) -> list[JokerOut]:
+    return [JokerOut.model_validate(joker) for joker in await JokerService(session, settings).park_jokers()]
+
+
+@app.get("/api/park/balloons", response_model=list[BalloonOut])
+async def park_balloons(session: AsyncSession = Depends(get_session)) -> list[BalloonOut]:
+    return [BalloonOut.model_validate(balloon) for balloon in await BalloonService(session).pending_balloons()]
+
+
+@app.post("/api/park/clown-votes/summary", response_model=ClownVoteSummaryOut)
+async def clown_vote_summary(
+    payload: ClownVoteSummaryRequest,
+    session: AsyncSession = Depends(get_session),
+    user_session: UserSession = Depends(get_current_user_session),
+) -> ClownVoteSummaryOut:
+    return await ClownVoteService(session).summary(user_session.id, payload.clown_ids)
+
+
+@app.post("/api/park/clown-votes/toggle", response_model=ClownVoteSummaryOut)
+async def toggle_clown_vote(
+    payload: ClownVoteToggleRequest,
+    session: AsyncSession = Depends(get_session),
+    user_session: UserSession = Depends(get_current_user_session),
+) -> ClownVoteSummaryOut:
+    try:
+        return await ClownVoteService(session).toggle(user_session.id, payload.clown_id, payload.current_clown_ids)
+    except ValueError as exc:
+        raise service_error(exc) from exc
 
 
 @app.get("/api/park/stream")

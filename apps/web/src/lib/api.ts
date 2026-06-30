@@ -72,6 +72,7 @@ export type Joker = {
   mbti: string;
   constellation: string;
   social_energy: "I" | "E";
+  desired_poi_id: string | null;
   persona: string;
   verdict: string;
   qr_token: string;
@@ -109,6 +110,11 @@ export type MatchResult = {
   reason: string;
   suggested_action: string;
   prompt: string;
+};
+
+export type MatchRequest = {
+  action_type: string;
+  target_owner_id?: string | null;
 };
 
 export type HealAction = {
@@ -277,6 +283,16 @@ export type AdminChatRoom = {
   last_message_at: string | null;
   message_count: number;
   recent_messages: ChatMessage[];
+};
+
+export type ClownVoteSummaryItem = {
+  clown_id: string;
+  votes: number;
+};
+
+export type ClownVoteSummary = {
+  items: ClownVoteSummaryItem[];
+  voted_clown_id: string | null;
 };
 
 function currentSiteOrigin() {

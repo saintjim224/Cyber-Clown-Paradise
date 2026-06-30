@@ -1,4 +1,5 @@
 import os
+from contextlib import AsyncExitStack
 from datetime import timedelta
 
 import pytest
@@ -30,12 +31,14 @@ def joker_payload(
     mbti: str = "INFP",
     constellation: str = "双鱼座",
     social_energy: str = "I",
+    desired_poi_id: str = "lj-yuxiu-lake",
 ):
     return {
         "nickname": nickname,
         "mbti": mbti,
         "constellation": constellation,
         "social_energy": social_energy,
+        "desired_poi_id": desired_poi_id,
         "consent_media": False,
     }
 
@@ -152,7 +155,134 @@ async def test_full_i_e_replay_flow_uses_session_owned_jokers():
 
 
 @pytest.mark.asyncio
-async def test_same_session_updates_one_joker_in_place():
+async def test_targeted_match_only_returns_selected_jokers_pending_balloon():
+    transport = ASGITransport(app=app)
+    async with (
+        AsyncClient(transport=transport, base_url="http://test") as target_a_client,
+        AsyncClient(transport=transport, base_url="http://test") as target_b_client,
+        AsyncClient(transport=transport, base_url="http://test") as empty_target_client,
+        AsyncClient(transport=transport, base_url="http://test") as healer_client,
+    ):
+        target_a_resp = await target_a_client.post(
+            "/api/jokers",
+            json=joker_payload("Target A", "INFP", "Pisces", "I", "lj-library"),
+        )
+        target_b_resp = await target_b_client.post(
+            "/api/jokers",
+            json=joker_payload("Target B", "ISFJ", "Virgo", "I", "lj-yuxiu-lake"),
+        )
+        empty_target_resp = await empty_target_client.post(
+            "/api/jokers",
+            json=joker_payload("Empty Target", "INTJ", "Cancer", "I", "lj-north-gate"),
+        )
+        healer_resp = await healer_client.post(
+            "/api/jokers",
+            json=joker_payload("Healer C", "ENFP", "Leo", "E", "lj-roman-square"),
+        )
+
+        assert target_a_resp.status_code == 200, target_a_resp.text
+        assert target_b_resp.status_code == 200, target_b_resp.text
+        assert empty_target_resp.status_code == 200, empty_target_resp.text
+        assert healer_resp.status_code == 200, healer_resp.text
+        target_a = target_a_resp.json()
+        target_b = target_b_resp.json()
+        empty_target = empty_target_resp.json()
+        healer = healer_resp.json()
+
+        target_a_balloon_resp = await target_a_client.post(
+            "/api/balloons",
+            json={"emo_text": "target A pending balloon"},
+        )
+        target_b_balloon_resp = await target_b_client.post(
+            "/api/balloons",
+            json={"emo_text": "target B pending balloon"},
+        )
+        assert target_a_balloon_resp.status_code == 200, target_a_balloon_resp.text
+        assert target_b_balloon_resp.status_code == 200, target_b_balloon_resp.text
+        target_a_balloon = target_a_balloon_resp.json()
+        target_b_balloon = target_b_balloon_resp.json()
+
+        targeted_match_resp = await healer_client.post(
+            "/api/heal/match",
+            json={"action_type": "cheer", "target_owner_id": target_a["id"]},
+        )
+        assert targeted_match_resp.status_code == 200, targeted_match_resp.text
+        targeted_match = targeted_match_resp.json()
+        assert targeted_match["balloon_id"] == target_a_balloon["id"]
+        assert targeted_match["owner_id"] == target_a["id"]
+        assert targeted_match["balloon_id"] != target_b_balloon["id"]
+
+        own_target_resp = await healer_client.post(
+            "/api/heal/match",
+            json={"action_type": "cheer", "target_owner_id": healer["id"]},
+        )
+        assert own_target_resp.status_code == 403, own_target_resp.text
+        assert own_target_resp.json()["detail"] == "cannot_heal_own_balloon"
+
+        no_pending_resp = await target_a_client.post(
+            "/api/heal/match",
+            json={"action_type": "cheer", "target_owner_id": empty_target["id"]},
+        )
+        assert no_pending_resp.status_code == 404, no_pending_resp.text
+        assert no_pending_resp.json()["detail"] == "no_pending_balloon_for_target"
+
+        missing_target_resp = await healer_client.post(
+            "/api/heal/match",
+            json={"action_type": "cheer", "target_owner_id": "jkr_missing"},
+        )
+        assert missing_target_resp.status_code == 404, missing_target_resp.text
+        assert missing_target_resp.json()["detail"] == "target_joker_not_found"
+
+
+@pytest.mark.asyncio
+async def test_park_balloons_lists_only_pending_balloons():
+    transport = ASGITransport(app=app)
+    async with (
+        AsyncClient(transport=transport, base_url="http://test") as owner_client,
+        AsyncClient(transport=transport, base_url="http://test") as healer_client,
+    ):
+        empty_resp = await owner_client.get("/api/park/balloons")
+        assert empty_resp.status_code == 200, empty_resp.text
+        assert empty_resp.json() == []
+
+        owner_resp = await owner_client.post("/api/jokers", json=joker_payload("气球主人"))
+        healer_resp = await healer_client.post(
+            "/api/jokers",
+            json=joker_payload("接球小丑", "ENFP", "狮子座", "E", "lj-roman-square"),
+        )
+        assert owner_resp.status_code == 200, owner_resp.text
+        assert healer_resp.status_code == 200, healer_resp.text
+
+        balloon_resp = await owner_client.post("/api/balloons", json={"emo_text": "刷新后也要看得见的气球"})
+        assert balloon_resp.status_code == 200, balloon_resp.text
+        balloon = balloon_resp.json()
+
+        pending_resp = await owner_client.get("/api/park/balloons")
+        assert pending_resp.status_code == 200, pending_resp.text
+        pending_balloons = pending_resp.json()
+        assert [item["id"] for item in pending_balloons] == [balloon["id"]]
+        assert pending_balloons[0]["status"] == "pending"
+        assert pending_balloons[0]["safe_summary"] == balloon["safe_summary"]
+
+        match_resp = await healer_client.post("/api/heal/match", json={"action_type": "cheer"})
+        assert match_resp.status_code == 200, match_resp.text
+        action_resp = await healer_client.post(
+            "/api/heal/actions",
+            json={
+                "balloon_id": balloon["id"],
+                "action_type": "cheer",
+                "cheer_text": "我接住了，刷新以后这颗就该离开等待池。",
+            },
+        )
+        assert action_resp.status_code == 200, action_resp.text
+
+        healed_resp = await owner_client.get("/api/park/balloons")
+        assert healed_resp.status_code == 200, healed_resp.text
+        assert all(item["id"] != balloon["id"] for item in healed_resp.json())
+
+
+@pytest.mark.asyncio
+async def test_same_session_reuses_first_joker_without_updates():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         first_resp = await client.post("/api/jokers", json=joker_payload("初版小丑"))
@@ -161,15 +291,17 @@ async def test_same_session_updates_one_joker_in_place():
 
         second_resp = await client.post(
             "/api/jokers",
-            json=joker_payload("新版小丑", "ENFP", "狮子座", "E"),
+            json=joker_payload("新版小丑", "ENFP", "狮子座", "E", "lj-roman-square"),
         )
         assert second_resp.status_code == 200, second_resp.text
         second = second_resp.json()
 
         assert second["id"] == first["id"]
         assert second["qr_token"] == first["qr_token"]
-        assert second["nickname"] == "新版小丑"
-        assert second["social_energy"] == "E"
+        assert second["nickname"] == first["nickname"]
+        assert second["mbti"] == first["mbti"] == "INFP"
+        assert second["social_energy"] == first["social_energy"] == "I"
+        assert second["desired_poi_id"] == first["desired_poi_id"] == "lj-yuxiu-lake"
 
 
 @pytest.mark.asyncio
@@ -185,6 +317,162 @@ async def test_separate_sessions_get_separate_jokers():
         assert first_resp.status_code == 200, first_resp.text
         assert second_resp.status_code == 200, second_resp.text
         assert first_resp.json()["id"] != second_resp.json()["id"]
+
+
+@pytest.mark.asyncio
+async def test_joker_desired_poi_is_required_and_valid():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        missing_payload = joker_payload()
+        missing_payload.pop("desired_poi_id")
+
+        missing_resp = await client.post("/api/jokers", json=missing_payload)
+        invalid_resp = await client.post(
+            "/api/jokers",
+            json=joker_payload(desired_poi_id="lj-not-a-real-place"),
+        )
+
+        assert missing_resp.status_code == 422, missing_resp.text
+        assert invalid_resp.status_code == 422, invalid_resp.text
+
+
+@pytest.mark.asyncio
+async def test_clown_vote_summary_and_one_vote_toggle():
+    transport = ASGITransport(app=app)
+    async with (
+        AsyncClient(transport=transport, base_url="http://test") as first_client,
+        AsyncClient(transport=transport, base_url="http://test") as second_client,
+    ):
+        first_summary = await first_client.post(
+            "/api/park/clown-votes/summary",
+            json={"clown_ids": ["guest-clown-a", "guest-clown-b"]},
+        )
+        assert first_summary.status_code == 200, first_summary.text
+        assert first_summary.json() == {
+            "items": [
+                {"clown_id": "guest-clown-a", "votes": 0},
+                {"clown_id": "guest-clown-b", "votes": 0},
+            ],
+            "voted_clown_id": None,
+        }
+
+        first_vote = await first_client.post(
+            "/api/park/clown-votes/toggle",
+            json={"clown_id": "guest-clown-a", "current_clown_ids": ["guest-clown-a", "guest-clown-b"]},
+        )
+        assert first_vote.status_code == 200, first_vote.text
+        first_vote_json = first_vote.json()
+        assert first_vote_json["voted_clown_id"] == "guest-clown-a"
+        assert first_vote_json["items"][0] == {"clown_id": "guest-clown-a", "votes": 1}
+
+        cancelled = await first_client.post(
+            "/api/park/clown-votes/toggle",
+            json={"clown_id": "guest-clown-a", "current_clown_ids": ["guest-clown-a", "guest-clown-b"]},
+        )
+        assert cancelled.status_code == 200, cancelled.text
+        assert cancelled.json()["voted_clown_id"] is None
+        assert cancelled.json()["items"][0] == {"clown_id": "guest-clown-a", "votes": 0}
+
+        await first_client.post(
+            "/api/park/clown-votes/toggle",
+            json={"clown_id": "guest-clown-a", "current_clown_ids": ["guest-clown-a", "guest-clown-b"]},
+        )
+        await second_client.post(
+            "/api/park/clown-votes/toggle",
+            json={"clown_id": "guest-clown-a", "current_clown_ids": ["guest-clown-a", "guest-clown-b"]},
+        )
+
+        switched = await first_client.post(
+            "/api/park/clown-votes/toggle",
+            json={"clown_id": "guest-clown-b", "current_clown_ids": ["guest-clown-a", "guest-clown-b"]},
+        )
+        assert switched.status_code == 200, switched.text
+        assert switched.json()["voted_clown_id"] == "guest-clown-b"
+        assert switched.json()["items"] == [
+            {"clown_id": "guest-clown-a", "votes": 1},
+            {"clown_id": "guest-clown-b", "votes": 1},
+        ]
+
+        scoped = await first_client.post(
+            "/api/park/clown-votes/summary",
+            json={"clown_ids": ["guest-clown-b"]},
+        )
+        assert scoped.status_code == 200, scoped.text
+        assert scoped.json()["items"] == [{"clown_id": "guest-clown-b", "votes": 1}]
+        assert scoped.json()["voted_clown_id"] == "guest-clown-b"
+
+
+@pytest.mark.asyncio
+async def test_park_jokers_lists_jokers_from_other_sessions():
+    transport = ASGITransport(app=app)
+    async with (
+        AsyncClient(transport=transport, base_url="http://test") as first_client,
+        AsyncClient(transport=transport, base_url="http://test") as second_client,
+        AsyncClient(transport=transport, base_url="http://test") as viewer_client,
+    ):
+        first_resp = await first_client.post(
+            "/api/jokers",
+            json=joker_payload("远处小丑", "INFP", "双鱼座", "I", "lj-school-hospital"),
+        )
+        second_resp = await second_client.post(
+            "/api/jokers",
+            json=joker_payload("隔壁小丑", "ENFP", "狮子座", "E", "lj-library"),
+        )
+
+        assert first_resp.status_code == 200, first_resp.text
+        assert second_resp.status_code == 200, second_resp.text
+        first_joker = first_resp.json()
+        second_joker = second_resp.json()
+
+        park_resp = await viewer_client.get("/api/park/jokers")
+        assert park_resp.status_code == 200, park_resp.text
+        park_jokers = park_resp.json()
+        park_ids = {joker["id"] for joker in park_jokers}
+        park_poi_ids = {joker["id"]: joker["desired_poi_id"] for joker in park_jokers}
+
+        assert first_joker["id"] in park_ids
+        assert second_joker["id"] in park_ids
+        assert first_joker["desired_poi_id"] == "lj-school-hospital"
+        assert second_joker["desired_poi_id"] == "lj-library"
+        assert park_poi_ids[first_joker["id"]] == "lj-school-hospital"
+        assert park_poi_ids[second_joker["id"]] == "lj-library"
+
+
+@pytest.mark.asyncio
+async def test_park_jokers_and_vote_summary_include_more_than_legacy_limit():
+    transport = ASGITransport(app=app)
+    async with AsyncExitStack() as stack:
+        created_ids: list[str] = []
+        for index in range(40):
+            client = await stack.enter_async_context(AsyncClient(transport=transport, base_url="http://test"))
+            resp = await client.post(
+                "/api/jokers",
+                json=joker_payload(
+                    f"批量小丑{index:02d}",
+                    "ENFP" if index % 2 else "INFP",
+                    "狮子座" if index % 2 else "双鱼座",
+                    "E" if index % 2 else "I",
+                    "lj-library" if index % 2 else "lj-yuxiu-lake",
+                ),
+            )
+            assert resp.status_code == 200, resp.text
+            created_ids.append(resp.json()["id"])
+
+        viewer_client = await stack.enter_async_context(AsyncClient(transport=transport, base_url="http://test"))
+        park_resp = await viewer_client.get("/api/park/jokers")
+        assert park_resp.status_code == 200, park_resp.text
+        park_ids = [joker["id"] for joker in park_resp.json()]
+        assert len(park_ids) == len(created_ids)
+        assert set(created_ids) == set(park_ids)
+
+        summary_resp = await viewer_client.post(
+            "/api/park/clown-votes/summary",
+            json={"clown_ids": created_ids},
+        )
+        assert summary_resp.status_code == 200, summary_resp.text
+        summary = summary_resp.json()
+        assert len(summary["items"]) == len(created_ids)
+        assert [item["clown_id"] for item in summary["items"]] == created_ids
 
 
 @pytest.mark.asyncio
@@ -294,6 +582,7 @@ async def test_joker_draft_and_edited_soul_creation():
                 "mbti": "INFP",
                 "constellation": "双鱼座",
                 "social_energy": "I",
+                "desired_poi_id": "lj-library",
                 "consent_media": False,
                 "soul_seed": "慢热、嘴硬心软、怕尴尬但爱讲冷笑话，不喜欢被逼着热场。",
                 "face_descriptor": FACE_DESCRIPTOR,
@@ -306,6 +595,7 @@ async def test_joker_draft_and_edited_soul_creation():
         assert joker_resp.status_code == 200, joker_resp.text
         joker = joker_resp.json()
         assert joker["soul_profile"]["catchphrase"] == "我先把尴尬藏进帽子里。"
+        assert joker["desired_poi_id"] == "lj-library"
         assert joker["avatar_recipe"] == draft["avatar_recipe"]
         assert joker["avatar_status"] == "recipe_ready"
         assert "face_descriptor" not in joker

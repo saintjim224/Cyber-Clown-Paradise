@@ -2,15 +2,15 @@
 
 import type { CSSProperties, FormEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Activity, CheckCircle, Clock, History, MessageCircle, Radio, Reply, RotateCcw, Send, Sparkles, UserPlus, Users, X, ZoomIn, ZoomOut } from "lucide-react";
+import { Activity, CheckCircle, Clock, Heart, History, MessageCircle, Radio, Reply, RotateCcw, Send, Sparkles, Trophy, UserPlus, Users, X, ZoomIn, ZoomOut } from "lucide-react";
 import { ChatRoom } from "@/components/chat/ChatRoom";
 import { LocationChatPanel } from "@/components/chat/LocationChatPanel";
 import { ClownSprite } from "@/components/pixel/ClownSprite";
 import { PixelAvatarBadge } from "@/components/pixel/PixelAvatarBadge";
 import { useLiveSocialEvents } from "@/hooks/useLiveSocialEvents";
 import { useLocationZone } from "@/hooks/useLocationZone";
-import { loadActiveJoker, saveActiveJoker } from "@/lib/clownAssets";
-import { apiFetch, type Balloon, type ChatRoom as ChatRoomType, type HealAction, type Joker, type MatchResult, type RelationshipRecord } from "@/lib/api";
+import { clearActiveJoker, loadActiveJoker, saveActiveJoker } from "@/lib/clownAssets";
+import { apiFetch, type Balloon, type ChatRoom as ChatRoomType, type ClownVoteSummary, type HealAction, type Joker, type MatchRequest, type MatchResult, type RelationshipRecord } from "@/lib/api";
 import {
   eventStatusText,
   eventTypeText,
@@ -29,6 +29,28 @@ type Selection =
   | { kind: "clown"; id: string }
   | { kind: "poi"; id: string };
 
+type ReplyActionType = "hug" | "pet" | "cheer" | "dance";
+
+type ReplyDraft = {
+  eventId: string;
+  match: MatchResult;
+  actionType: ReplyActionType;
+  cheerText: string;
+};
+
+type ParkLive2DMode = "user" | "admin";
+
+type ParkLive2DProps = {
+  mode?: ParkLive2DMode;
+};
+
+type ReplyComposerOptions = {
+  eventId?: string;
+  preferredAction?: ReplyActionType;
+  targetOwnerId?: string;
+  targetClownName?: string;
+};
+
 type PositionStyle = CSSProperties & {
   "--x": string;
   "--y": string;
@@ -45,21 +67,6 @@ type MapView = {
 type ViewportSize = {
   width: number;
   height: number;
-};
-
-type ReplyActionType = "hug" | "pet" | "cheer" | "dance";
-
-type ReplyDraft = {
-  eventId: string;
-  match: MatchResult;
-  actionType: ReplyActionType;
-  cheerText: string;
-};
-
-type ParkLive2DMode = "user" | "admin";
-
-type ParkLive2DProps = {
-  mode?: ParkLive2DMode;
 };
 
 const statusOrder: SocialEvent["status"][] = ["live", "waiting", "done", "replay"];
@@ -154,9 +161,45 @@ function defaultReplyText(actionType: ReplyActionType) {
   return replyActionCards.find((card) => card.type === actionType)?.defaultText ?? replyActionCards[0].defaultText;
 }
 
+function isDemoClownId(id: string | undefined) {
+  return Boolean(id?.startsWith("demo-clown-"));
+}
+
+function isRealParkClown(id: string | undefined) {
+  return Boolean(id?.startsWith("jkr_"));
+}
+
+const sessionJokerPrompt = "先在灵魂工坊生成你的专属小丑，再回来投放气球。";
+
+function commandErrorMessage(error: unknown, fallback: string, targetClownName?: string) {
+  const message = error instanceof Error ? error.message : "";
+  if (message.includes("no_active_joker") || message.includes("token_not_found")) return sessionJokerPrompt;
+  if (message.includes("no_pending_balloon_for_target")) {
+    return targetClownName ? `${targetClownName} 现在没有待接气球。` : "这个小丑现在没有待接气球。";
+  }
+  if (message.includes("target_joker_not_found")) return "这个小丑刚刚离开了乐园，换一个目标试试。";
+  if (message.includes("cannot_heal_own_balloon")) return "不能接自己的气球，试试选择其他小丑。";
+  if (message.includes("no_pending_balloon")) return "现在还没有其他人的待接气球。";
+  return message || fallback;
+}
+
 export function ParkLive2D({ mode = "user" }: ParkLive2DProps) {
   const isAdmin = mode === "admin";
-  const { clowns, events, activeEvent, rosterLoaded, joinPark, joinWave, dropBalloon, ensureMatchedBalloon, replyToEvent, focusEvent, addJokerToPark } = useLiveSocialEvents();
+  const {
+    clowns,
+    events,
+    activeEvent,
+    rosterLoaded,
+    joinPark,
+    joinWave,
+    dropBalloon,
+    ensureMatchedBalloon,
+    replyToEvent,
+    focusEvent,
+    addJokerToPark,
+    syncParkJokers,
+    syncPendingBalloons
+  } = useLiveSocialEvents();
   const [selected, setSelected] = useState<Selection>({ kind: "event", id: activeEvent?.id ?? events[0]?.id ?? "" });
   const [activeModule, setActiveModule] = useState<SocialEvent["status"]>("live");
   const [balloonText, setBalloonText] = useState("");
@@ -165,6 +208,8 @@ export function ParkLive2D({ mode = "user" }: ParkLive2DProps) {
   const [manualJokerPoint, setManualJokerPoint] = useState<ImagePointTuple | null>(null);
   const [commandLoading, setCommandLoading] = useState(false);
   const [commandError, setCommandError] = useState<string | null>(null);
+  const [voteSummary, setVoteSummary] = useState<ClownVoteSummary>({ items: [], voted_clown_id: null });
+  const [voteSubmittingId, setVoteSubmittingId] = useState<string | null>(null);
   const [replyDraft, setReplyDraft] = useState<ReplyDraft | null>(null);
   const [chatUnlocks, setChatUnlocks] = useState<RelationshipRecord[]>([]);
   const [activeChatRoom, setActiveChatRoom] = useState<ChatRoomType | null>(null);
@@ -212,6 +257,16 @@ export function ParkLive2D({ mode = "user" }: ParkLive2DProps) {
     [baseMapScale, viewportSize.height, viewportSize.width]
   );
 
+  const activateSessionJoker = useCallback(
+    (joker: Joker) => {
+      setActiveJoker(joker);
+      const clown = addJokerToPark(joker);
+      setSelected({ kind: "clown", id: clown.id });
+      return clown;
+    },
+    [addJokerToPark]
+  );
+
   useEffect(() => {
     const viewport = mapViewportRef.current;
     if (!viewport) return;
@@ -231,24 +286,51 @@ export function ParkLive2D({ mode = "user" }: ParkLive2DProps) {
     });
   }, [clampMapView]);
 
+  const restoreSessionJoker = useCallback(async () => {
+    try {
+      return await apiFetch<Joker>("/api/jokers/me");
+    } catch (sessionError) {
+      const storedJoker = loadActiveJoker();
+      if (storedJoker?.qr_token) {
+        try {
+          return await apiFetch<Joker>(`/api/jokers/enter/${encodeURIComponent(storedJoker.qr_token)}`, {
+            method: "POST"
+          });
+        } catch (restoreError) {
+          const message = restoreError instanceof Error ? restoreError.message : "";
+          if (message.includes("token_not_found")) clearActiveJoker();
+          throw restoreError;
+        }
+      } else {
+        clearActiveJoker();
+      }
+      throw sessionError;
+    }
+  }, []);
+
+  const ensureSessionJoker = useCallback(async () => {
+    try {
+      const joker = await restoreSessionJoker();
+      saveActiveJoker(joker);
+      const clown = activateSessionJoker(joker);
+      return { joker, clown };
+    } catch (error) {
+      setActiveJoker(null);
+      throw error;
+    }
+  }, [activateSessionJoker, restoreSessionJoker]);
+
   useEffect(() => {
     let cancelled = false;
 
-    function activateJoker(joker: Joker) {
-      setActiveJoker(joker);
-      const clown = addJokerToPark(joker);
-      setSelected({ kind: "clown", id: clown.id });
-    }
-
     async function loadSessionJoker() {
       try {
-        const sessionJoker = await apiFetch<Joker>("/api/jokers/me");
+        const sessionJoker = await restoreSessionJoker();
         if (cancelled) return;
         saveActiveJoker(sessionJoker);
-        activateJoker(sessionJoker);
+        activateSessionJoker(sessionJoker);
       } catch {
-        const storedJoker = loadActiveJoker();
-        if (!cancelled && storedJoker) activateJoker(storedJoker);
+        if (!cancelled) setActiveJoker(null);
       }
     }
 
@@ -257,7 +339,33 @@ export function ParkLive2D({ mode = "user" }: ParkLive2DProps) {
     return () => {
       cancelled = true;
     };
-  }, [addJokerToPark]);
+  }, [activateSessionJoker, restoreSessionJoker]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSharedJokers() {
+      try {
+        const [parkJokers, pendingBalloons] = await Promise.all([
+          apiFetch<Joker[]>("/api/park/jokers"),
+          apiFetch<Balloon[]>("/api/park/balloons")
+        ]);
+        if (!cancelled) {
+          syncParkJokers(parkJokers);
+          syncPendingBalloons(pendingBalloons);
+        }
+      } catch {
+        // Keep the local demo usable if the shared park list is temporarily unavailable.
+      }
+    }
+
+    void loadSharedJokers();
+    const timer = window.setInterval(() => void loadSharedJokers(), 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [syncParkJokers, syncPendingBalloons]);
 
   useEffect(() => {
     void refreshChatUnlocks(activeJoker?.id);
@@ -285,6 +393,9 @@ export function ParkLive2D({ mode = "user" }: ParkLive2DProps) {
   const focusedPoi = selected.kind === "poi" ? liangjiangPois.find((poi) => poi.id === selected.id) ?? null : null;
   const activeClown = activeJoker ? displayClowns.find((clown) => clown.id === activeJoker.id) ?? null : null;
   const activeChatZone = useLocationZone(activeClown?.mapPoint ?? null);
+  const focusedClownIsDemo = Boolean(focusedClown && isDemoClownId(focusedClown.id));
+  const focusedClownIsSelf = Boolean(activeJoker && focusedClown?.id === activeJoker.id);
+  const canReplyToFocusedClown = Boolean(activeJoker && focusedClown && !focusedClownIsDemo && !focusedClownIsSelf);
   const waitingEvent = events.find((event) => event.status === "waiting");
   const visibleEvents = events.slice(-14);
   const bucketEvents = events.filter((event) => event.status === activeModule).slice(-6).reverse();
@@ -303,6 +414,30 @@ export function ParkLive2D({ mode = "user" }: ParkLive2DProps) {
     if (!activeChatZone) return 0;
     return Math.max(1, displayClowns.filter((clown) => pointInChatZone(clown.mapPoint, activeChatZone)).length);
   }, [activeChatZone, displayClowns]);
+  const realParkClowns = useMemo(
+    () => clowns.filter((clown) => isRealParkClown(clown.id)),
+    [clowns]
+  );
+  const voteableClowns = useMemo(
+    () => realParkClowns,
+    [realParkClowns]
+  );
+  const voteableClownIds = useMemo(() => voteableClowns.map((clown) => clown.id), [voteableClowns]);
+  const voteCountById = useMemo(
+    () => new Map(voteSummary.items.map((item) => [item.clown_id, item.votes])),
+    [voteSummary.items]
+  );
+  const rankedClowns = useMemo(
+    () =>
+      voteableClowns
+        .map((clown, index) => ({
+          clown,
+          initialIndex: index,
+          votes: voteCountById.get(clown.id) ?? 0
+        }))
+        .sort((left, right) => right.votes - left.votes || left.initialIndex - right.initialIndex),
+    [voteCountById, voteableClowns]
+  );
   const mapWorldStyle = useMemo(
     () =>
       ({
@@ -403,6 +538,85 @@ export function ParkLive2D({ mode = "user" }: ParkLive2DProps) {
     }
   }, []);
 
+  const refreshVoteSummary = useCallback(async () => {
+    if (voteableClownIds.length === 0) {
+      setVoteSummary({ items: [], voted_clown_id: null });
+      return;
+    }
+    const summary = await apiFetch<ClownVoteSummary>("/api/park/clown-votes/summary", {
+      method: "POST",
+      body: JSON.stringify({ clown_ids: voteableClownIds })
+    });
+    setVoteSummary(summary);
+  }, [voteableClownIds]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function pollVotes() {
+      try {
+        if (voteableClownIds.length === 0) {
+          if (!cancelled) setVoteSummary({ items: [], voted_clown_id: null });
+          return;
+        }
+        const summary = await apiFetch<ClownVoteSummary>("/api/park/clown-votes/summary", {
+          method: "POST",
+          body: JSON.stringify({ clown_ids: voteableClownIds })
+        });
+        if (!cancelled) setVoteSummary(summary);
+      } catch {
+        // Keep the current optimistic board visible if the vote endpoint blips.
+      }
+    }
+
+    void pollVotes();
+    const timer = window.setInterval(() => void pollVotes(), 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [voteableClownIds]);
+
+  async function toggleFavoriteVote(clownId: string) {
+    if (voteSubmittingId || voteableClownIds.length === 0) return;
+    const previousSummary = voteSummary;
+    const previousVotedId = previousSummary.voted_clown_id;
+    const nextVotedId = previousVotedId === clownId ? null : clownId;
+    const nextCounts = new Map(previousSummary.items.map((item) => [item.clown_id, item.votes]));
+
+    if (previousVotedId) {
+      nextCounts.set(previousVotedId, Math.max(0, (nextCounts.get(previousVotedId) ?? 0) - 1));
+    }
+    if (nextVotedId) {
+      nextCounts.set(nextVotedId, (nextCounts.get(nextVotedId) ?? 0) + 1);
+    }
+
+    setVoteSubmittingId(clownId);
+    setCommandError(null);
+    setVoteSummary({
+      voted_clown_id: nextVotedId,
+      items: voteableClownIds.map((id) => ({ clown_id: id, votes: nextCounts.get(id) ?? 0 }))
+    });
+
+    try {
+      const summary = await apiFetch<ClownVoteSummary>("/api/park/clown-votes/toggle", {
+        method: "POST",
+        body: JSON.stringify({
+          clown_id: clownId,
+          current_clown_ids: voteableClownIds
+        })
+      });
+      setVoteSummary(summary);
+      setCommandError(null);
+    } catch (err) {
+      setVoteSummary(previousSummary);
+      setCommandError(err instanceof Error ? err.message : "投票同步失败");
+      void refreshVoteSummary();
+    } finally {
+      setVoteSubmittingId(null);
+    }
+  }
+
   const clientPointToMapPoint = useCallback(
     (event: ReactMouseEvent<HTMLDivElement>): ImagePointTuple => {
       const rect = event.currentTarget.getBoundingClientRect();
@@ -465,47 +679,70 @@ export function ParkLive2D({ mode = "user" }: ParkLive2DProps) {
     }
   }
 
-  async function handleDropBalloon(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!activeJoker) {
-      setCommandError("先在灵魂工坊生成你的专属小丑，再投放气球。");
-      return;
-    }
+  async function handleLocateMyJoker() {
+    if (commandLoading) return;
     setCommandLoading(true);
     setCommandError(null);
     try {
+      const { clown } = await ensureSessionJoker();
+      setSelected({ kind: "clown", id: clown.id });
+      centerMapOn(clown.mapPoint, 1.82);
+    } catch (err) {
+      setCommandError(commandErrorMessage(err, sessionJokerPrompt));
+    } finally {
+      setCommandLoading(false);
+    }
+  }
+
+  async function handleDropBalloon(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setCommandLoading(true);
+    setCommandError(null);
+    try {
+      const { joker } = await ensureSessionJoker();
+      const emoText = balloonText.trim() || mood;
       const balloon = await apiFetch<Balloon>("/api/balloons", {
         method: "POST",
-        body: JSON.stringify({ emo_text: balloonText || mood })
+        body: JSON.stringify({ emo_text: emoText })
       });
       const created = dropBalloon({
-        text: balloonText,
+        text: emoText,
         mood,
         balloon,
-        senderId: activeJoker.id
+        senderId: joker.id
       });
       setBalloonText("");
       setActiveModule("waiting");
       setSelected({ kind: "event", id: created.id });
       centerMapOn(getEventMapPosition(created, displayClowns));
     } catch (err) {
-      setCommandError(err instanceof Error ? err.message : "投放气球失败");
+      setCommandError(commandErrorMessage(err, "投放气球失败"));
     } finally {
       setCommandLoading(false);
     }
   }
 
-  async function openReplyComposer(eventId?: string, preferredAction: ReplyActionType = "cheer") {
-    if (!activeJoker) {
-      setCommandError("先在灵魂工坊生成你的专属小丑，再接住气球。");
-      return;
-    }
+  async function openReplyComposer(options: ReplyComposerOptions = {}) {
+    const { eventId, preferredAction = "cheer", targetOwnerId, targetClownName } = options;
     setCommandLoading(true);
     setCommandError(null);
     try {
+      const { joker } = await ensureSessionJoker();
+      if (targetOwnerId && isDemoClownId(targetOwnerId)) {
+        setCommandError("Demo 小丑没有真实待接气球，换一个现场小丑试试。");
+        return;
+      }
+      if (targetOwnerId && targetOwnerId === joker.id) {
+        setCommandError("不能接自己的气球，试试选择其他小丑。");
+        return;
+      }
+      const matchRequest: MatchRequest = {
+        action_type: preferredAction,
+        ...(targetOwnerId ? { target_owner_id: targetOwnerId } : {})
+      };
       const match = await apiFetch<MatchResult>("/api/heal/match", {
         method: "POST",
-        body: JSON.stringify({ action_type: preferredAction })
+        body: JSON.stringify(matchRequest)
       });
       const actionType = normalizeReplyAction(match.suggested_action);
       const matchedEvent = ensureMatchedBalloon(match);
@@ -520,14 +757,14 @@ export function ParkLive2D({ mode = "user" }: ParkLive2DProps) {
       setSelected({ kind: "event", id: targetEventId });
       centerMapOn(getEventMapPosition(matchedEvent, displayClowns));
     } catch (err) {
-      setCommandError(err instanceof Error ? err.message : "接住气球失败");
+      setCommandError(commandErrorMessage(err, "接住气球失败", targetClownName));
     } finally {
       setCommandLoading(false);
     }
   }
 
   async function submitReplyComposer() {
-    if (!activeJoker || !replyDraft) return;
+    if (!replyDraft) return;
     const cheerText = replyDraft.cheerText.trim();
     if (!cheerText) {
       setCommandError("先留一句回应，再把气球送回去。");
@@ -536,6 +773,7 @@ export function ParkLive2D({ mode = "user" }: ParkLive2DProps) {
     setCommandLoading(true);
     setCommandError(null);
     try {
+      const { joker } = await ensureSessionJoker();
       const action = await apiFetch<HealAction>("/api/heal/actions", {
         method: "POST",
         body: JSON.stringify({
@@ -547,13 +785,13 @@ export function ParkLive2D({ mode = "user" }: ParkLive2DProps) {
       const matchedEvent = ensureMatchedBalloon(replyDraft.match);
       replyToEvent({
         eventId: replyDraft.eventId,
-        responderId: activeJoker.id,
+        responderId: joker.id,
         match: replyDraft.match,
         action
       });
       const updatedJoker = {
-        ...activeJoker,
-        energy_score: (activeJoker.energy_score ?? 0) + action.energy_delta_healer
+        ...joker,
+        energy_score: (joker.energy_score ?? 0) + action.energy_delta_healer
       };
       setActiveJoker(updatedJoker);
       saveActiveJoker(updatedJoker);
@@ -563,7 +801,7 @@ export function ParkLive2D({ mode = "user" }: ParkLive2DProps) {
       setSelected({ kind: "event", id: replyDraft.eventId });
       centerMapOn(getEventMapPosition(matchedEvent, displayClowns));
     } catch (err) {
-      setCommandError(err instanceof Error ? err.message : "提交回应失败");
+      setCommandError(commandErrorMessage(err, "提交回应失败"));
     } finally {
       setCommandLoading(false);
     }
@@ -589,7 +827,15 @@ export function ParkLive2D({ mode = "user" }: ParkLive2DProps) {
   }
 
   function handleReplyWave() {
-    void openReplyComposer(waitingEvent?.id);
+    void openReplyComposer(
+      waitingEvent
+        ? {
+            eventId: waitingEvent.id,
+            targetOwnerId: waitingEvent.from,
+            targetClownName: clownName(waitingEvent.from)
+          }
+        : {}
+    );
   }
 
   function styleForMapPoint(point: ImagePointTuple, clown?: DemoClown): PositionStyle {
@@ -606,6 +852,10 @@ export function ParkLive2D({ mode = "user" }: ParkLive2DProps) {
     return `${timeLabel(event.createdAt)} · ${eventTypeText[event.type]} · ${poi?.label ?? "两江校区"}`;
   }
 
+  function eventIsFocused(event: SocialEvent) {
+    return focusedEvent?.id === event.id || selected.kind === "event" && selected.id === event.id;
+  }
+
   function selectPoi(poi: LiangjiangPoi) {
     setSelected({ kind: "poi", id: poi.id });
     centerMapOn(poi.mapPoint, 1.78);
@@ -614,10 +864,6 @@ export function ParkLive2D({ mode = "user" }: ParkLive2DProps) {
   function selectClown(clown: DemoClown) {
     setSelected({ kind: "clown", id: clown.id });
     centerMapOn(clown.mapPoint, 1.82);
-  }
-
-  function eventIsFocused(event: SocialEvent) {
-    return focusedEvent?.id === event.id || selected.kind === "event" && selected.id === event.id;
   }
 
   function clownIsFocused(clown: DemoClown) {
@@ -656,7 +902,7 @@ export function ParkLive2D({ mode = "user" }: ParkLive2DProps) {
               <p>
                 {isAdmin
                   ? "同一份两江校区数据驱动小丑、地点、气球和回放。现场看到的是大家的小丑正在替自己社交。"
-                  : "像气泡一样轻轻发出心情，让数据库里的小丑替你在校园地图上打招呼、接回应、留下回放。"}
+                  : "像气球一样轻轻发出心情，让数据库里的小丑替你在校园地图上打招呼、接回应、留下回放。"}
               </p>
             </div>
             <span className="park-live2d__signal">
@@ -692,7 +938,7 @@ export function ParkLive2D({ mode = "user" }: ParkLive2DProps) {
               </div>
               <div>
                 <strong>{waitingCount}</strong>
-                <span>待接气泡</span>
+                <span>待接气球</span>
               </div>
               <div>
                 <strong>{relayCount}</strong>
@@ -712,7 +958,7 @@ export function ParkLive2D({ mode = "user" }: ParkLive2DProps) {
           ) : (
             <div className="park-user-intent-strip" aria-label="社交玩法说明">
               <span>用户端</span>
-              <strong>发一颗气泡，等一个轻轻的回应</strong>
+              <strong>发一颗气球，等一个轻轻的回应</strong>
               <p>这里不展示后台队列和回放池，只保留你需要的社交动作。</p>
             </div>
           )}
@@ -720,100 +966,100 @@ export function ParkLive2D({ mode = "user" }: ParkLive2DProps) {
           <div className={`park-map-stage ${isAdmin ? "park-map-stage--single" : ""}`}>
             <div
               ref={mapViewportRef}
-            className="park-map2d"
-            aria-label="两江校区可缩放直播地图"
-            onWheel={handleMapWheel}
-            onPointerDown={handleMapPointerDown}
-            onPointerMove={handleMapPointerMove}
-            onPointerUp={handleMapPointerEnd}
-            onPointerCancel={handleMapPointerEnd}
-            onDoubleClick={handleMapDoubleClick}
-          >
-            <div className="park-map2d__world" style={mapWorldStyle}>
-              <img
-                className="park-map2d__image"
-                src={liangjiangMapImage.src}
-                width={liangjiangMapImage.width}
-                height={liangjiangMapImage.height}
-                alt={liangjiangMapImage.alt}
-                draggable={false}
-              />
-
-              {liangjiangPois.map((poi) => (
-                <button
-                  key={poi.id}
-                  type="button"
-                  className={`park-poi-pin park-poi-pin--${poi.type}`}
-                  aria-label={poi.label}
-                  data-active={poiIsFocused(poi)}
-                  style={styleForMapPoint(poi.mapPoint)}
-                  onClick={() => selectPoi(poi)}
+              className="park-map2d"
+              aria-label="两江校区可缩放直播地图"
+              onWheel={handleMapWheel}
+              onPointerDown={handleMapPointerDown}
+              onPointerMove={handleMapPointerMove}
+              onPointerUp={handleMapPointerEnd}
+              onPointerCancel={handleMapPointerEnd}
+              onDoubleClick={handleMapDoubleClick}
+            >
+              <div className="park-map2d__world" style={mapWorldStyle}>
+                <img
+                  className="park-map2d__image"
+                  src={liangjiangMapImage.src}
+                  width={liangjiangMapImage.width}
+                  height={liangjiangMapImage.height}
+                  alt={liangjiangMapImage.alt}
+                  draggable={false}
                 />
-              ))}
 
-              {visibleEvents.map((event) => (
-                <button
-                  key={event.id}
-                  type="button"
-                  className="park-event-bubble2d"
-                  data-active={eventIsFocused(event)}
-                  data-status={event.status}
-                  style={styleForMapPoint(getEventMapPosition(event, displayClowns))}
-                  onClick={() => selectEvent(event)}
-                >
-                  <strong>{event.title}</strong>
-                  <span>{eventTypeText[event.type]}</span>
+                {liangjiangPois.map((poi) => (
+                  <button
+                    key={poi.id}
+                    type="button"
+                    className={`park-poi-pin park-poi-pin--${poi.type}`}
+                    aria-label={poi.label}
+                    data-active={poiIsFocused(poi)}
+                    style={styleForMapPoint(poi.mapPoint)}
+                    onClick={() => selectPoi(poi)}
+                  />
+                ))}
+
+                {visibleEvents.map((event) => (
+                  <button
+                    key={event.id}
+                    type="button"
+                    className="park-event-bubble2d"
+                    data-active={eventIsFocused(event)}
+                    data-status={event.status}
+                    style={styleForMapPoint(getEventMapPosition(event, displayClowns))}
+                    onClick={() => selectEvent(event)}
+                  >
+                    <strong>{event.title}</strong>
+                    <span>{eventTypeText[event.type]}</span>
+                  </button>
+                ))}
+
+                {displayClowns.map((clown) => (
+                  <button
+                    key={clown.id}
+                    type="button"
+                    className="park-clown-token"
+                    data-active={clownIsFocused(clown)}
+                    style={styleForMapPoint(clown.mapPoint, clown)}
+                    onClick={() => selectClown(clown)}
+                  >
+                    {clown.spriteUrl ? (
+                      <ClownSprite
+                        spriteUrl={clown.spriteUrl}
+                        previewUrl={clown.image}
+                        frameSize={clown.frameSize}
+                        actions={clown.spriteActions}
+                        action={clownIsFocused(clown) ? "special" : "idle"}
+                        size={52}
+                        label={clown.name}
+                      />
+                    ) : clown.image ? (
+                      <img src={clown.image} alt="" />
+                    ) : clown.avatarRecipe ? (
+                      <PixelAvatarBadge recipe={clown.avatarRecipe} compact label={clown.name} />
+                    ) : (
+                      <span className="park-clown-sprite" aria-hidden>
+                        <i className="park-clown-sprite__hat" />
+                        <i className="park-clown-sprite__head" />
+                        <i className="park-clown-sprite__body" />
+                      </span>
+                    )}
+                    <span className="park-clown-token__name">{clown.name}</span>
+                  </button>
+                ))}
+              </div>
+
+              <div className="park-map2d__tools" aria-label="地图缩放控制" onPointerDown={(event) => event.stopPropagation()}>
+                <button type="button" aria-label="放大地图" title="放大地图" onClick={() => zoomMap(mapZoomStep)}>
+                  <ZoomIn size={17} aria-hidden />
                 </button>
-              ))}
-
-              {displayClowns.map((clown) => (
-                <button
-                  key={clown.id}
-                  type="button"
-                  className="park-clown-token"
-                  data-active={clownIsFocused(clown)}
-                  style={styleForMapPoint(clown.mapPoint, clown)}
-                  onClick={() => selectClown(clown)}
-                >
-                  {clown.spriteUrl ? (
-                    <ClownSprite
-                      spriteUrl={clown.spriteUrl}
-                      previewUrl={clown.image}
-                      frameSize={clown.frameSize}
-                      actions={clown.spriteActions}
-                      action={clownIsFocused(clown) ? "special" : "idle"}
-                      size={52}
-                      label={clown.name}
-                    />
-                  ) : clown.image ? (
-                    <img src={clown.image} alt="" />
-                  ) : clown.avatarRecipe ? (
-                    <PixelAvatarBadge recipe={clown.avatarRecipe} compact label={clown.name} />
-                  ) : (
-                    <span className="park-clown-sprite" aria-hidden>
-                      <i className="park-clown-sprite__hat" />
-                      <i className="park-clown-sprite__head" />
-                      <i className="park-clown-sprite__body" />
-                    </span>
-                  )}
-                  <span className="park-clown-token__name">{clown.name}</span>
+                <button type="button" aria-label="缩小地图" title="缩小地图" onClick={() => zoomMap(-mapZoomStep)}>
+                  <ZoomOut size={17} aria-hidden />
                 </button>
-              ))}
-            </div>
+                <button type="button" aria-label="重置地图视图" title="重置地图视图" onClick={resetMap}>
+                  <RotateCcw size={17} aria-hidden />
+                </button>
+              </div>
 
-            <div className="park-map2d__tools" aria-label="地图缩放控制" onPointerDown={(event) => event.stopPropagation()}>
-              <button type="button" aria-label="放大地图" title="放大地图" onClick={() => zoomMap(mapZoomStep)}>
-                <ZoomIn size={17} aria-hidden />
-              </button>
-              <button type="button" aria-label="缩小地图" title="缩小地图" onClick={() => zoomMap(-mapZoomStep)}>
-                <ZoomOut size={17} aria-hidden />
-              </button>
-              <button type="button" aria-label="重置地图视图" title="重置地图视图" onClick={resetMap}>
-                <RotateCcw size={17} aria-hidden />
-              </button>
-            </div>
-
-            {!isAdmin && activeJoker ? <div className="park-map2d__move-hint">双击空地图移动我的小丑</div> : null}
+              {!isAdmin && activeJoker ? <div className="park-map2d__move-hint">双击空地图移动我的小丑</div> : null}
             </div>
 
             {!isAdmin ? (
@@ -869,12 +1115,76 @@ export function ParkLive2D({ mode = "user" }: ParkLive2DProps) {
             ) : null}
           </div>
 
+          <section className="park-favorite-board" aria-label="小丑喜爱排行榜">
+            <div className="park-favorite-board__header">
+              <div>
+                <span className="pixel-kicker">FAVORITES</span>
+                <div className="park-favorite-title-row">
+                  <h2>小丑人气榜</h2>
+                  <span>共 {rankedClowns.length} 只</span>
+                </div>
+                <p>口头禅来自灵魂草案 / 入园档案；每人只能投一票，点一下投票，再点一下取消。</p>
+              </div>
+              <Trophy color="var(--color-coin)" aria-hidden />
+            </div>
+
+            <div className="park-favorite-list" data-empty={rankedClowns.length === 0}>
+              {rankedClowns.length === 0 ? (
+                <div className="park-event-empty">还没有用户小丑入园。从灵魂工坊生成小丑，或扫码恢复入园后，这里会实时开榜。</div>
+              ) : (
+                rankedClowns.map(({ clown, votes }, index) => {
+                  const isWinner = index === 0;
+                  const voted = voteSummary.voted_clown_id === clown.id;
+                  return (
+                    <article className="park-favorite-row" data-winner={isWinner} data-voted={voted} key={clown.id}>
+                      <div className="park-favorite-row__sprite" aria-hidden>
+                        <ClownSprite
+                          spriteUrl={clown.spriteUrl}
+                          previewUrl={clown.image}
+                          frameSize={clown.frameSize}
+                          actions={clown.spriteActions}
+                          action={isWinner ? "special" : "walk-front"}
+                          size={62}
+                          label={clown.name}
+                          fallback={(
+                            <span className="park-clown-sprite" aria-hidden>
+                              <i className="park-clown-sprite__hat" />
+                              <i className="park-clown-sprite__head" />
+                              <i className="park-clown-sprite__body" />
+                            </span>
+                          )}
+                        />
+                      </div>
+                      <strong className="park-favorite-row__name">
+                        {isWinner ? "最喜爱小丑 · " : `NO.${index + 1} · `}
+                        {clown.name}
+                      </strong>
+                      <p className="park-favorite-row__catchphrase">“{clown.catchphrase ?? clown.line}”</p>
+                      <button
+                        type="button"
+                        className="park-favorite-row__vote"
+                        data-voted={voted}
+                        aria-pressed={voted}
+                        disabled={voteSubmittingId !== null}
+                        onClick={() => void toggleFavoriteVote(clown.id)}
+                      >
+                        <Heart size={15} aria-hidden />
+                        <span>{voted ? "取消" : "投票"}</span>
+                        <strong>{votes}</strong>
+                      </button>
+                    </article>
+                  );
+                })
+              )}
+            </div>
+          </section>
+
           {!isAdmin ? (
-            <section className="park-user-dock" aria-label="气泡社交操作">
+            <section className="park-user-dock" aria-label="气球社交操作">
               <div className="park-user-dock__intro">
                 <span className="pixel-kicker">SOCIAL MODE</span>
-                <h2>把今天交给一颗气泡</h2>
-                <p>用户端只保留轻社交动作：加入广场、投放心情、接住别人的气泡。</p>
+                <h2>把今天交给一颗气球</h2>
+                <p>用户端只保留轻社交动作：加入广场、投放心情、接住别人的气球。</p>
               </div>
 
               <div className="park-user-dock__actions">
@@ -882,16 +1192,16 @@ export function ParkLive2D({ mode = "user" }: ParkLive2DProps) {
                   <UserPlus size={17} aria-hidden />
                   加入广场
                 </button>
-                <button type="button" className="park-reply-button" disabled={commandLoading || !rosterLoaded} onClick={() => void openReplyComposer(waitingEvent?.id)}>
+                <button type="button" className="park-reply-button" disabled={commandLoading || !rosterLoaded} onClick={() => void openReplyComposer({ eventId: waitingEvent?.id })}>
                   <Reply size={16} aria-hidden />
-                  {waitingEvent ? "接住一个气泡" : "随机匹配气泡"}
+                  {waitingEvent ? "接住一个气球" : "随机匹配气球"}
                 </button>
               </div>
 
               {activeJoker ? (
                 <form className="park-user-balloon-form" onSubmit={handleDropBalloon}>
                   <label className="field">
-                    <span>气泡心情</span>
+                    <span>气球心情</span>
                     <select value={mood} onChange={(event) => setMood(event.target.value)}>
                       {moodOptions.map((option) => (
                         <option key={option} value={option}>
@@ -911,13 +1221,13 @@ export function ParkLive2D({ mode = "user" }: ParkLive2DProps) {
                   </label>
                   <button type="submit" className="secondary-button" disabled={commandLoading}>
                     <Send size={16} aria-hidden />
-                    {commandLoading ? "投放中" : "投放气泡"}
+                    {commandLoading ? "投放中" : "投放气球"}
                   </button>
                 </form>
               ) : (
                 <div className="park-user-empty">
                   <strong>先拥有你的专属小丑</strong>
-                  <span>去灵魂工坊生成形象后，就能用真实数据库小丑发气泡和回应。</span>
+                  <span>去灵魂工坊生成形象后，就能用真实数据库小丑发气球和回应。</span>
                   <a className="secondary-button" href="/workshop">去灵魂工坊</a>
                 </div>
               )}
@@ -947,13 +1257,9 @@ export function ParkLive2D({ mode = "user" }: ParkLive2DProps) {
               </div>
             </div>
 
-            <button type="button" className="primary-button" onClick={handleJoin}>
+            <button type="button" className="primary-button" disabled={commandLoading} onClick={() => void handleLocateMyJoker()}>
               <UserPlus size={17} aria-hidden />
-              加入游园
-            </button>
-            <button type="button" className="secondary-button park-wave-button" onClick={handleJoinWave}>
-              <Users size={17} aria-hidden />
-              模拟 12 人入园
+              定位我的小丑
             </button>
 
             <form className="park-balloon-form" onSubmit={handleDropBalloon}>
@@ -976,17 +1282,17 @@ export function ParkLive2D({ mode = "user" }: ParkLive2DProps) {
                   placeholder="今天想轻轻打个招呼"
                 />
               </label>
-              <button type="submit" className="secondary-button" disabled={commandLoading}>
+              <button type="submit" className="secondary-button" disabled={!activeJoker || commandLoading}>
                 <Send size={16} aria-hidden />
                 {commandLoading ? "处理中" : "投放气球"}
               </button>
             </form>
 
-            <button type="button" className="park-reply-button" disabled={commandLoading} onClick={() => void openReplyComposer(waitingEvent?.id)}>
+            <button type="button" className="park-reply-button" disabled={!activeJoker || commandLoading} onClick={() => void openReplyComposer({ eventId: waitingEvent?.id })}>
               <Reply size={16} aria-hidden />
               {waitingEvent ? "接住一个气球" : "匹配一个气球"}
             </button>
-            <button type="button" className="park-reply-button park-reply-button--batch" disabled={waitingCount === 0 || commandLoading} onClick={handleReplyWave}>
+            <button type="button" className="park-reply-button park-reply-button--batch" disabled={!activeJoker || waitingCount === 0 || commandLoading} onClick={handleReplyWave}>
               <Sparkles size={16} aria-hidden />
               {waitingCount > 0 ? "接力一个等待" : "等待气球为 0"}
             </button>
@@ -1031,7 +1337,18 @@ export function ParkLive2D({ mode = "user" }: ParkLive2DProps) {
                       <small>{event.summary}</small>
                     </button>
                     {event.status === "waiting" ? (
-                      <button type="button" className="park-event-row2d__reply" disabled={commandLoading} onClick={() => void openReplyComposer(event.id)}>
+                      <button
+                        type="button"
+                        className="park-event-row2d__reply"
+                        disabled={commandLoading}
+                        onClick={() =>
+                          void openReplyComposer({
+                            eventId: event.id,
+                            targetOwnerId: event.from,
+                            targetClownName: clownName(event.from)
+                          })
+                        }
+                      >
                         接住
                       </button>
                     ) : null}
@@ -1098,14 +1415,36 @@ export function ParkLive2D({ mode = "user" }: ParkLive2DProps) {
                 <span>{focusedClown.energy} · {focusedClown.role}</span>
                 <strong>{focusedClown.name}</strong>
                 <p>{focusedClown.line}</p>
-                {focusedChatUnlock ? (
-                  <div className="park-focus-actions">
+                <div className="park-focus-card__actions">
+                  {focusedChatUnlock ? (
                     <button className="park-chat-action" type="button" disabled={chatOpening} onClick={() => void openFocusedPrivateChat()}>
                       <MessageCircle size={16} aria-hidden />
                       {chatOpening ? "打开中" : "私聊"}
                     </button>
-                  </div>
-                ) : null}
+                  ) : null}
+                  {!activeJoker ? (
+                    <small>先定位我的小丑，再接其他小丑的气球。</small>
+                  ) : focusedClownIsDemo ? (
+                    <small>Demo 小丑没有真实待接气球，换一个现场小丑试试。</small>
+                  ) : focusedClownIsSelf ? (
+                    <small>这是你自己的小丑，不能接自己的气球。</small>
+                  ) : (
+                    <button
+                      type="button"
+                      className="park-focus-card__reply"
+                      disabled={!canReplyToFocusedClown || commandLoading}
+                      onClick={() =>
+                        void openReplyComposer({
+                          targetOwnerId: focusedClown.id,
+                          targetClownName: focusedClown.name
+                        })
+                      }
+                    >
+                      <Reply size={15} aria-hidden />
+                      接这个小丑的气球
+                    </button>
+                  )}
+                </div>
               </div>
             ) : null}
 
@@ -1189,7 +1528,7 @@ export function ParkLive2D({ mode = "user" }: ParkLive2DProps) {
 
             <div className="park-reply-modal__footer">
               <span>回应者能量 +1 · 对方能量 +2 · 亲密度 +3</span>
-              <button className="primary-button" type="button" disabled={commandLoading || replyDraft.cheerText.trim().length === 0} onClick={() => void submitReplyComposer()}>
+              <button className="primary-button" type="button" disabled={!activeJoker || commandLoading || replyDraft.cheerText.trim().length === 0} onClick={() => void submitReplyComposer()}>
                 <Send size={16} aria-hidden />
                 送出回应
               </button>

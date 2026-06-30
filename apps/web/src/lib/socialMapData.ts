@@ -26,6 +26,8 @@ export type DemoClown = {
   energy: "I" | "E" | "A";
   status: string;
   line: string;
+  catchphrase?: string;
+  homePoiId?: string;
   action: string;
   position: LngLatTuple;
   mapPoint: ImagePointTuple;
@@ -64,6 +66,25 @@ export type ChatZone = {
   anchor: ImagePointTuple;
   bounds: ChatZoneBounds[];
 };
+
+const demoClownFrameSize = 256;
+
+const demoClownSpriteActions: NonNullable<DemoClown["spriteActions"]> = {
+  idle: { start: 0, frames: 1, fps: 1 },
+  "walk-front": { start: 0, frames: 5, fps: 6 },
+  "walk-side": { start: 5, frames: 5, fps: 6 },
+  "walk-back": { start: 10, frames: 5, fps: 6 },
+  special: { start: 15, frames: 10, fps: 5 }
+};
+
+function demoClownSprite(name: string) {
+  return {
+    image: `/clowns/demo-e/${name}/preview.png`,
+    spriteUrl: `/clowns/demo-e/${name}/sprite.png`,
+    frameSize: demoClownFrameSize,
+    spriteActions: demoClownSpriteActions
+  };
+}
 
 export type SocialEvent = {
   id: string;
@@ -430,7 +451,8 @@ export const demoClowns: DemoClown[] = [
     position: amapPosition("lj-main-gate"),
     mapPoint: [767, 768],
     color: "#e23d2f",
-    accent: "#ffd84a"
+    accent: "#ffd84a",
+    ...demoClownSprite("糖鼻邮差")
   },
   {
     id: "demo-clown-02",
@@ -443,7 +465,8 @@ export const demoClowns: DemoClown[] = [
     position: amapPosition("lj-yuxiu-lake"),
     mapPoint: [845, 562],
     color: "#2c67c7",
-    accent: "#9be36d"
+    accent: "#9be36d",
+    ...demoClownSprite("湖边听筒")
   },
   {
     id: "demo-clown-03",
@@ -456,7 +479,8 @@ export const demoClowns: DemoClown[] = [
     position: amapPosition("lj-roman-square"),
     mapPoint: [907, 395],
     color: "#ff5f8f",
-    accent: "#27f5d4"
+    accent: "#27f5d4",
+    ...demoClownSprite("彩带搭子")
   },
   {
     id: "demo-clown-04",
@@ -469,7 +493,8 @@ export const demoClowns: DemoClown[] = [
     position: amapPosition("lj-library"),
     mapPoint: [608, 488],
     color: "#7c5cff",
-    accent: "#ffe096"
+    accent: "#ffe096",
+    ...demoClownSprite("书库影子")
   },
   {
     id: "demo-clown-05",
@@ -482,7 +507,8 @@ export const demoClowns: DemoClown[] = [
     position: amapPosition("lj-north-sport-field"),
     mapPoint: [1424, 276],
     color: "#26b86d",
-    accent: "#ffd84a"
+    accent: "#ffd84a",
+    ...demoClownSprite("操场鼓手")
   },
   {
     id: "demo-clown-06",
@@ -495,7 +521,8 @@ export const demoClowns: DemoClown[] = [
     position: amapPosition("lj-north-dorm"),
     mapPoint: [1408, 159],
     color: "#f08a24",
-    accent: "#b7f7ff"
+    accent: "#b7f7ff",
+    ...demoClownSprite("夜灯糖纸")
   }
 ];
 
