@@ -123,6 +123,40 @@ class JokerRelationship(Base, TimestampMixin):
     last_action_id: Mapped[str | None] = mapped_column(ForeignKey("heal_actions.id"), nullable=True)
 
 
+class ChatRoom(Base):
+    __tablename__ = "chat_rooms"
+    __table_args__ = (
+        UniqueConstraint("room_type", "joker_a_id", "joker_b_id", name="ux_chat_room_private_pair"),
+        UniqueConstraint("room_type", "location_id", name="ux_chat_room_location"),
+        Index("ix_chat_rooms_joker_a_id", "joker_a_id"),
+        Index("ix_chat_rooms_joker_b_id", "joker_b_id"),
+        Index("ix_chat_rooms_location_id", "location_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("chr"))
+    room_type: Mapped[str] = mapped_column(String(20), index=True)
+    joker_a_id: Mapped[str | None] = mapped_column(ForeignKey("joker_profiles.id"), nullable=True)
+    joker_b_id: Mapped[str | None] = mapped_column(ForeignKey("joker_profiles.id"), nullable=True)
+    location_id: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+    __table_args__ = (
+        Index("ix_chat_messages_room_id_created_at", "room_id", "created_at"),
+        Index("ix_chat_messages_sender_id", "sender_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("msg"))
+    room_id: Mapped[str] = mapped_column(ForeignKey("chat_rooms.id"), index=True)
+    sender_id: Mapped[str] = mapped_column(ForeignKey("joker_profiles.id"))
+    content: Mapped[str] = mapped_column(String(500))
+    content_safe: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
 class InteractionEvent(Base, TimestampMixin):
     __tablename__ = "interaction_events"
 

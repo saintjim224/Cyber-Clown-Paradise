@@ -5,7 +5,7 @@ export default function ParkPage() {
   return (
     <main className="app-shell module-page park-live-page">
       <SiteHeader />
-      <ParkLive2D />
+      <ParkLive2D mode="user" />
     </main>
   );
 }

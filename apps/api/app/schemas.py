@@ -209,6 +209,17 @@ class RelationshipOut(BaseModel):
     interaction_count: int
     last_action_id: str | None
     updated_at: datetime
+    chat_unlocked: bool = False
+    chat_room_id: str | None = None
+
+
+class PublicFootprintOut(BaseModel):
+    id: str
+    room_id: str
+    location_id: str
+    location_label: str
+    content_safe: str | None
+    created_at: datetime
 
 
 class ReplayOut(BaseModel):
@@ -219,6 +230,7 @@ class ReplayOut(BaseModel):
     received_replies: list[ReplyRecordOut]
     sent_replies: list[ReplyRecordOut]
     relationships: list[RelationshipOut]
+    public_footprints: list[PublicFootprintOut] = Field(default_factory=list)
     energy_score: int
     headline: str
     share_text: str
@@ -246,7 +258,121 @@ class AvatarJobOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ChatMessageCreate(BaseModel):
+    content: str = Field(min_length=1, max_length=500)
+
+
+class ChatMessageOut(BaseModel):
+    id: str
+    room_id: str
+    sender_id: str
+    sender: JokerBriefOut | None = None
+    content_safe: str | None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ChatRoomOut(BaseModel):
+    id: str
+    room_type: str
+    joker_a_id: str | None
+    joker_b_id: str | None
+    location_id: str | None
+    created_at: datetime
+    last_message_at: datetime | None
+    peer: JokerBriefOut | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ChatLocationOut(BaseModel):
+    id: str
+    label: str
+    note: str
+
+
+class ChatLocationPresenceOut(BaseModel):
+    location_id: str
+    room_id: str | None = None
+    active_count: int = 0
+    active_jokers: list[JokerBriefOut] = Field(default_factory=list)
+
+
 class HealthOut(BaseModel):
     ok: bool
     service: str
     env: str
+
+
+class AdminLoginCreate(BaseModel):
+    username: str = Field(min_length=1, max_length=80)
+    password: str = Field(min_length=1, max_length=200)
+
+
+class AdminSessionOut(BaseModel):
+    username: str
+    role: str
+    is_super_admin: bool
+    host: str | None
+    expires_in_seconds: int
+
+
+class AdminSystemStatsOut(BaseModel):
+    joker_count: int
+    user_session_count: int
+    balloon_count: int
+    pending_balloon_count: int
+    healed_balloon_count: int
+    heal_action_count: int
+    event_count: int
+    avatar_job_count: int
+    media_asset_count: int
+    moderation_log_count: int
+    chat_room_count: int = 0
+    chat_message_count: int = 0
+
+
+class AdminChatMessageOut(BaseModel):
+    id: str
+    room_id: str
+    sender_id: str
+    sender: JokerBriefOut | None = None
+    content_safe: str | None
+    created_at: datetime
+
+
+class AdminChatRoomOut(BaseModel):
+    id: str
+    room_type: str
+    location_id: str | None
+    joker_a_id: str | None
+    joker_b_id: str | None
+    created_at: datetime
+    last_message_at: datetime | None
+    message_count: int = 0
+    recent_messages: list[AdminChatMessageOut] = Field(default_factory=list)
+
+
+class AdminJokerOut(BaseModel):
+    id: str
+    owner_session_id: str | None
+    nickname: str | None
+    mbti: str
+    constellation: str
+    social_energy: str
+    persona: str
+    verdict: str
+    qr_token: str
+    avatar_status: str | None
+    energy_score: int
+    created_at: datetime
+    updated_at: datetime
+    balloon_count: int
+    action_count: int
+    event_count: int
+
+
+class AdminDeleteOut(BaseModel):
+    joker_id: str
+    deleted_counts: dict[str, int]

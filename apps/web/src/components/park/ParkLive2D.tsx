@@ -1,17 +1,22 @@
 "use client";
 
-import type { CSSProperties, FormEvent, PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent } from "react";
+import type { CSSProperties, FormEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Activity, CheckCircle, Clock, History, MapPin, Radio, Reply, RotateCcw, Send, Sparkles, UserPlus, Users, X, ZoomIn, ZoomOut } from "lucide-react";
+import { Activity, CheckCircle, Clock, History, MessageCircle, Radio, Reply, RotateCcw, Send, Sparkles, UserPlus, Users, X, ZoomIn, ZoomOut } from "lucide-react";
+import { ChatRoom } from "@/components/chat/ChatRoom";
+import { LocationChatPanel } from "@/components/chat/LocationChatPanel";
 import { ClownSprite } from "@/components/pixel/ClownSprite";
+import { PixelAvatarBadge } from "@/components/pixel/PixelAvatarBadge";
 import { useLiveSocialEvents } from "@/hooks/useLiveSocialEvents";
+import { useLocationZone } from "@/hooks/useLocationZone";
 import { loadActiveJoker, saveActiveJoker } from "@/lib/clownAssets";
-import { apiFetch, type Balloon, type HealAction, type Joker, type MatchResult } from "@/lib/api";
+import { apiFetch, type Balloon, type ChatRoom as ChatRoomType, type HealAction, type Joker, type MatchResult, type RelationshipRecord } from "@/lib/api";
 import {
   eventStatusText,
   eventTypeText,
   liangjiangMapImage,
   liangjiangPois,
+  pointInChatZone,
   poiTypeText,
   type DemoClown,
   type ImagePointTuple,
@@ -49,6 +54,12 @@ type ReplyDraft = {
   match: MatchResult;
   actionType: ReplyActionType;
   cheerText: string;
+};
+
+type ParkLive2DMode = "user" | "admin";
+
+type ParkLive2DProps = {
+  mode?: ParkLive2DMode;
 };
 
 const statusOrder: SocialEvent["status"][] = ["live", "waiting", "done", "replay"];
@@ -96,6 +107,10 @@ function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
 
+function shouldZoomWithWheel(event: ReactWheelEvent<HTMLDivElement>) {
+  return event.ctrlKey || event.deltaMode !== 0 || Math.abs(event.deltaY) >= 40;
+}
+
 function getEventPoi(event: SocialEvent): LiangjiangPoi | null {
   return event.poiId ? liangjiangPois.find((item) => item.id === event.poiId) ?? null : null;
 }
@@ -139,25 +154,43 @@ function defaultReplyText(actionType: ReplyActionType) {
   return replyActionCards.find((card) => card.type === actionType)?.defaultText ?? replyActionCards[0].defaultText;
 }
 
-export function ParkLive2D() {
-  const { clowns, events, activeEvent, joinPark, joinWave, dropBalloon, ensureMatchedBalloon, replyToEvent, focusEvent, addJokerToPark } = useLiveSocialEvents();
+export function ParkLive2D({ mode = "user" }: ParkLive2DProps) {
+  const isAdmin = mode === "admin";
+  const { clowns, events, activeEvent, rosterLoaded, joinPark, joinWave, dropBalloon, ensureMatchedBalloon, replyToEvent, focusEvent, addJokerToPark } = useLiveSocialEvents();
   const [selected, setSelected] = useState<Selection>({ kind: "event", id: activeEvent?.id ?? events[0]?.id ?? "" });
   const [activeModule, setActiveModule] = useState<SocialEvent["status"]>("live");
   const [balloonText, setBalloonText] = useState("");
   const [mood, setMood] = useState(moodOptions[0]);
   const [activeJoker, setActiveJoker] = useState<Joker | null>(null);
+  const [manualJokerPoint, setManualJokerPoint] = useState<ImagePointTuple | null>(null);
   const [commandLoading, setCommandLoading] = useState(false);
   const [commandError, setCommandError] = useState<string | null>(null);
   const [replyDraft, setReplyDraft] = useState<ReplyDraft | null>(null);
+  const [chatUnlocks, setChatUnlocks] = useState<RelationshipRecord[]>([]);
+  const [activeChatRoom, setActiveChatRoom] = useState<ChatRoomType | null>(null);
+  const [chatOpening, setChatOpening] = useState(false);
   const mapViewportRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null);
   const [mapView, setMapView] = useState<MapView>(initialMapView);
   const [viewportSize, setViewportSize] = useState<ViewportSize>({ width: 0, height: 0 });
   const baseMapScale = useMemo(() => {
     if (viewportSize.width <= 0 || viewportSize.height <= 0) return 1;
-    return Math.min(viewportSize.width / liangjiangMapImage.width, viewportSize.height / liangjiangMapImage.height);
+    return Math.max(viewportSize.width / liangjiangMapImage.width, viewportSize.height / liangjiangMapImage.height);
   }, [viewportSize.height, viewportSize.width]);
   const effectiveMapScale = baseMapScale * mapView.scale;
+
+  const refreshChatUnlocks = useCallback(async (jokerId?: string | null) => {
+    if (!jokerId) {
+      setChatUnlocks([]);
+      return;
+    }
+    try {
+      const unlocks = await apiFetch<RelationshipRecord[]>("/api/chat/private-unlocks");
+      setChatUnlocks(unlocks);
+    } catch {
+      setChatUnlocks([]);
+    }
+  }, []);
 
   const clampMapView = useCallback(
     (view: MapView): MapView => {
@@ -226,9 +259,32 @@ export function ParkLive2D() {
     };
   }, [addJokerToPark]);
 
+  useEffect(() => {
+    void refreshChatUnlocks(activeJoker?.id);
+  }, [activeJoker?.id, refreshChatUnlocks]);
+
+  useEffect(() => {
+    setManualJokerPoint(null);
+  }, [activeJoker?.id]);
+
+  const displayClowns = useMemo(() => {
+    if (!activeJoker || !manualJokerPoint) return clowns;
+    return clowns.map((clown) =>
+      clown.id === activeJoker.id
+        ? {
+            ...clown,
+            mapPoint: manualJokerPoint,
+            status: "由你移动到当前区域",
+            action: "正在根据地图位置切换公共聊天池"
+          }
+        : clown
+    );
+  }, [activeJoker, clowns, manualJokerPoint]);
   const focusedEvent = selected.kind === "event" ? events.find((event) => event.id === selected.id) ?? activeEvent : activeEvent;
-  const focusedClown = selected.kind === "clown" ? clowns.find((clown) => clown.id === selected.id) ?? null : null;
+  const focusedClown = selected.kind === "clown" ? displayClowns.find((clown) => clown.id === selected.id) ?? null : null;
   const focusedPoi = selected.kind === "poi" ? liangjiangPois.find((poi) => poi.id === selected.id) ?? null : null;
+  const activeClown = activeJoker ? displayClowns.find((clown) => clown.id === activeJoker.id) ?? null : null;
+  const activeChatZone = useLocationZone(activeClown?.mapPoint ?? null);
   const waitingEvent = events.find((event) => event.status === "waiting");
   const visibleEvents = events.slice(-14);
   const bucketEvents = events.filter((event) => event.status === activeModule).slice(-6).reverse();
@@ -239,6 +295,14 @@ export function ParkLive2D() {
   const recentCount = Math.max(events.filter(isRecent).length, events.slice(-5).filter((event) => event.status === "live").length);
   const relayCount = events.filter((event) => event.to || event.status === "done" || event.status === "replay").length;
   const focusedEventPoi = focusedEvent ? getEventPoi(focusedEvent) : null;
+  const focusedChatUnlock = useMemo(() => {
+    if (!activeJoker || !focusedClown || focusedClown.id === activeJoker.id) return null;
+    return chatUnlocks.find((relationship) => relationship.chat_unlocked && relationship.joker.id === focusedClown.id) ?? null;
+  }, [activeJoker, chatUnlocks, focusedClown]);
+  const activeZoneOccupancy = useMemo(() => {
+    if (!activeChatZone) return 0;
+    return Math.max(1, displayClowns.filter((clown) => pointInChatZone(clown.mapPoint, activeChatZone)).length);
+  }, [activeChatZone, displayClowns]);
   const mapWorldStyle = useMemo(
     () =>
       ({
@@ -283,6 +347,7 @@ export function ParkLive2D() {
 
   const handleMapWheel = useCallback(
     (event: ReactWheelEvent<HTMLDivElement>) => {
+      if (!shouldZoomWithWheel(event)) return;
       event.preventDefault();
       const rect = event.currentTarget.getBoundingClientRect();
       const delta = event.deltaY > 0 ? -mapZoomStep : mapZoomStep;
@@ -338,11 +403,51 @@ export function ParkLive2D() {
     }
   }, []);
 
+  const clientPointToMapPoint = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>): ImagePointTuple => {
+      const rect = event.currentTarget.getBoundingClientRect();
+      const worldCenterX = rect.width / 2 + mapView.x;
+      const worldCenterY = rect.height / 2 + mapView.y;
+      return [
+        Math.round(
+          clamp(
+            (event.clientX - rect.left - worldCenterX) / effectiveMapScale + liangjiangMapImage.width / 2,
+            24,
+            liangjiangMapImage.width - 24
+          )
+        ),
+        Math.round(
+          clamp(
+            (event.clientY - rect.top - worldCenterY) / effectiveMapScale + liangjiangMapImage.height / 2,
+            24,
+            liangjiangMapImage.height - 24
+          )
+        )
+      ];
+    },
+    [effectiveMapScale, mapView.x, mapView.y]
+  );
+
+  const handleMapDoubleClick = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>) => {
+      if (!activeJoker || isAdmin) return;
+      const target = event.target;
+      if (target instanceof HTMLElement && target.closest("button, input, select, textarea, a, .location-chat-panel")) {
+        return;
+      }
+      const point = clientPointToMapPoint(event);
+      setManualJokerPoint(point);
+      setSelected({ kind: "clown", id: activeJoker.id });
+      centerMapOn(point, Math.max(mapView.scale, 1.58));
+    },
+    [activeJoker, centerMapOn, clientPointToMapPoint, isAdmin, mapView.scale]
+  );
+
   function selectEvent(event: SocialEvent) {
     setSelected({ kind: "event", id: event.id });
     setActiveModule(event.status);
     focusEvent(event.id);
-    centerMapOn(getEventMapPosition(event, clowns));
+    centerMapOn(getEventMapPosition(event, displayClowns));
   }
 
   function handleJoin() {
@@ -382,7 +487,7 @@ export function ParkLive2D() {
       setBalloonText("");
       setActiveModule("waiting");
       setSelected({ kind: "event", id: created.id });
-      centerMapOn(getEventMapPosition(created, clowns));
+      centerMapOn(getEventMapPosition(created, displayClowns));
     } catch (err) {
       setCommandError(err instanceof Error ? err.message : "投放气球失败");
     } finally {
@@ -413,7 +518,7 @@ export function ParkLive2D() {
       });
       setActiveModule("waiting");
       setSelected({ kind: "event", id: targetEventId });
-      centerMapOn(getEventMapPosition(matchedEvent, clowns));
+      centerMapOn(getEventMapPosition(matchedEvent, displayClowns));
     } catch (err) {
       setCommandError(err instanceof Error ? err.message : "接住气球失败");
     } finally {
@@ -452,15 +557,35 @@ export function ParkLive2D() {
       };
       setActiveJoker(updatedJoker);
       saveActiveJoker(updatedJoker);
+      void refreshChatUnlocks(updatedJoker.id);
       setReplyDraft(null);
       setActiveModule("done");
       setSelected({ kind: "event", id: replyDraft.eventId });
-      centerMapOn(getEventMapPosition(matchedEvent, clowns));
+      centerMapOn(getEventMapPosition(matchedEvent, displayClowns));
     } catch (err) {
       setCommandError(err instanceof Error ? err.message : "提交回应失败");
     } finally {
       setCommandLoading(false);
     }
+  }
+
+  async function openPrivateChatForJoker(jokerId: string) {
+    if (!activeJoker || jokerId === activeJoker.id) return;
+    setChatOpening(true);
+    setCommandError(null);
+    try {
+      const room = await apiFetch<ChatRoomType>(`/api/chat/private/${jokerId}`, { method: "POST" });
+      setActiveChatRoom(room);
+    } catch (err) {
+      setCommandError(err instanceof Error ? err.message : "打开私聊失败");
+    } finally {
+      setChatOpening(false);
+    }
+  }
+
+  async function openFocusedPrivateChat() {
+    if (!focusedClown) return;
+    await openPrivateChatForJoker(focusedClown.id);
   }
 
   function handleReplyWave() {
@@ -474,12 +599,6 @@ export function ParkLive2D() {
       "--clown-main": clown?.color,
       "--clown-accent": clown?.accent
     };
-  }
-
-  function polylinePoints(event: SocialEvent) {
-    return getEventMapPath(event, clowns)
-      .map((point) => `${point[0]},${point[1]}`)
-      .join(" ");
   }
 
   function eventMeta(event: SocialEvent) {
@@ -515,54 +634,92 @@ export function ParkLive2D() {
 
   function clownName(id: string | undefined) {
     if (!id) return "待接力";
-    return clowns.find((clown) => clown.id === id)?.name ?? "现场小丑";
+    return displayClowns.find((clown) => clown.id === id)?.name ?? "现场小丑";
+  }
+
+  function connectionFeedText(event: SocialEvent) {
+    const from = clownName(event.from);
+    const to = event.to ? clownName(event.to) : null;
+    if (to) return `${from} 和 ${to} 建立了连接`;
+    const poi = getEventPoi(event);
+    return `${from} 在 ${poi?.label ?? "两江校区"} 发起了${eventTypeText[event.type]}`;
   }
 
   return (
-    <section className="park-live2d" aria-label="两江二维实时社交乐园">
+    <section className={`park-live2d park-live2d--${mode}`} aria-label={isAdmin ? "两江二维实时社交运营台" : "两江二维实时社交广场"}>
       <div className="park-live2d__layout">
         <section className="park-live2d__map-panel" aria-label="实时二维社交地图">
           <div className="park-live2d__header">
             <div>
-              <span className="pixel-kicker">LIVE 2D PARK</span>
-              <h1>两江小丑实时游园</h1>
-              <p>同一份两江校区数据驱动小丑、地点、气球和回放。现场看到的是大家的小丑正在替自己社交。</p>
+              <span className="pixel-kicker">{isAdmin ? "OPS LIVE PARK" : "BUBBLE SOCIAL"}</span>
+              <h1>{isAdmin ? "两江小丑实时游园" : "小丑社交广场"}</h1>
+              <p>
+                {isAdmin
+                  ? "同一份两江校区数据驱动小丑、地点、气球和回放。现场看到的是大家的小丑正在替自己社交。"
+                  : "像气泡一样轻轻发出心情，让数据库里的小丑替你在校园地图上打招呼、接回应、留下回放。"}
+              </p>
             </div>
             <span className="park-live2d__signal">
               <Activity size={16} aria-hidden />
-              tick 运行中
+              {rosterLoaded ? `${clowns.length} 只小丑在线` : "同步小丑中"}
             </span>
           </div>
 
-          <div className="park-heat-grid" aria-label="现场热度">
-            <div>
-              <strong>{clowns.length}</strong>
-              <span>当前小丑</span>
+          {isAdmin ? (
+            <div className="park-heat-grid" aria-label="现场热度">
+              <div>
+                <strong>{clowns.length}</strong>
+                <span>当前小丑</span>
+              </div>
+              <div>
+                <strong>{waitingCount}</strong>
+                <span>等待气球</span>
+              </div>
+              <div>
+                <strong>{recentCount}</strong>
+                <span>刚刚发生</span>
+              </div>
+              <div>
+                <strong>{relayCount}</strong>
+                <span>接力次数</span>
+              </div>
             </div>
-            <div>
-              <strong>{waitingCount}</strong>
-              <span>等待气球</span>
+          ) : (
+            <div className="park-user-stat-grid" aria-label="广场状态">
+              <div>
+                <strong>{clowns.length}</strong>
+                <span>同校小丑</span>
+              </div>
+              <div>
+                <strong>{waitingCount}</strong>
+                <span>待接气泡</span>
+              </div>
+              <div>
+                <strong>{relayCount}</strong>
+                <span>已回应</span>
+              </div>
             </div>
-            <div>
-              <strong>{recentCount}</strong>
-              <span>刚刚发生</span>
-            </div>
-            <div>
-              <strong>{relayCount}</strong>
-              <span>接力次数</span>
-            </div>
-          </div>
+          )}
 
-          <div className="park-direction-strip" aria-label="当前产品方向">
-            <div>
-              <span>确认方向</span>
-              <strong>现场多人小丑替身社交</strong>
+          {isAdmin ? (
+            <div className="park-direction-strip" aria-label="当前产品方向">
+              <div>
+                <span>确认方向</span>
+                <strong>现场多人小丑替身社交</strong>
+              </div>
+              <p>不是静态地图，也不是 3D 形象秀。核心是让现场小丑投放气球，由其他小丑接力回应，持续产生可回放事件。</p>
             </div>
-            <p>不是静态地图，也不是 3D 形象秀。核心是让现场小丑投放气球，由其他小丑接力回应，持续产生可回放事件。</p>
-          </div>
+          ) : (
+            <div className="park-user-intent-strip" aria-label="社交玩法说明">
+              <span>用户端</span>
+              <strong>发一颗气泡，等一个轻轻的回应</strong>
+              <p>这里不展示后台队列和回放池，只保留你需要的社交动作。</p>
+            </div>
+          )}
 
-          <div
-            ref={mapViewportRef}
+          <div className={`park-map-stage ${isAdmin ? "park-map-stage--single" : ""}`}>
+            <div
+              ref={mapViewportRef}
             className="park-map2d"
             aria-label="两江校区可缩放直播地图"
             onWheel={handleMapWheel}
@@ -570,6 +727,7 @@ export function ParkLive2D() {
             onPointerMove={handleMapPointerMove}
             onPointerUp={handleMapPointerEnd}
             onPointerCancel={handleMapPointerEnd}
+            onDoubleClick={handleMapDoubleClick}
           >
             <div className="park-map2d__world" style={mapWorldStyle}>
               <img
@@ -581,34 +739,16 @@ export function ParkLive2D() {
                 draggable={false}
               />
 
-              <svg
-                className="park-map2d__paths"
-                viewBox={`0 0 ${liangjiangMapImage.width} ${liangjiangMapImage.height}`}
-                preserveAspectRatio="none"
-                aria-hidden
-              >
-                {visibleEvents.map((event) => (
-                  <polyline
-                    key={event.id}
-                    points={polylinePoints(event)}
-                    data-active={eventIsFocused(event)}
-                    data-status={event.status}
-                  />
-                ))}
-              </svg>
-
               {liangjiangPois.map((poi) => (
                 <button
                   key={poi.id}
                   type="button"
                   className={`park-poi-pin park-poi-pin--${poi.type}`}
+                  aria-label={poi.label}
                   data-active={poiIsFocused(poi)}
                   style={styleForMapPoint(poi.mapPoint)}
                   onClick={() => selectPoi(poi)}
-                >
-                  <MapPin size={14} aria-hidden />
-                  <span>{poi.label}</span>
-                </button>
+                />
               ))}
 
               {visibleEvents.map((event) => (
@@ -618,15 +758,15 @@ export function ParkLive2D() {
                   className="park-event-bubble2d"
                   data-active={eventIsFocused(event)}
                   data-status={event.status}
-                  style={styleForMapPoint(getEventMapPosition(event, clowns))}
+                  style={styleForMapPoint(getEventMapPosition(event, displayClowns))}
                   onClick={() => selectEvent(event)}
                 >
                   <strong>{event.title}</strong>
-                  <span>{getEventPoi(event)?.label ?? eventTypeText[event.type]}</span>
+                  <span>{eventTypeText[event.type]}</span>
                 </button>
               ))}
 
-              {clowns.map((clown) => (
+              {displayClowns.map((clown) => (
                 <button
                   key={clown.id}
                   type="button"
@@ -647,6 +787,8 @@ export function ParkLive2D() {
                     />
                   ) : clown.image ? (
                     <img src={clown.image} alt="" />
+                  ) : clown.avatarRecipe ? (
+                    <PixelAvatarBadge recipe={clown.avatarRecipe} compact label={clown.name} />
                   ) : (
                     <span className="park-clown-sprite" aria-hidden>
                       <i className="park-clown-sprite__hat" />
@@ -671,16 +813,132 @@ export function ParkLive2D() {
               </button>
             </div>
 
-            <div className="park-map2d__focus" aria-live="polite">
-              <small>{focusedEvent ? eventMeta(focusedEvent) : "两江校区"}</small>
-              <strong>{focusedEvent?.title ?? "等待第一场互动"}</strong>
-              <span>{focusedEvent?.summary ?? "加入游园或投放情绪气球后，这里会同步高亮。"}</span>
-              {focusedEventPoi ? <em>{focusedEventPoi.note}</em> : null}
+            {!isAdmin && activeJoker ? <div className="park-map2d__move-hint">双击空地图移动我的小丑</div> : null}
             </div>
+
+            {!isAdmin ? (
+              <aside className="park-map-status-rail" aria-label="地图状态栏">
+                <LocationChatPanel
+                  zone={activeChatZone}
+                  currentJoker={activeJoker}
+                  occupancy={activeZoneOccupancy}
+                  privateUnlocks={chatUnlocks}
+                  onOpenPrivateChat={(joker) => {
+                    setSelected({ kind: "clown", id: joker.id });
+                    void openPrivateChatForJoker(joker.id);
+                  }}
+                />
+
+                <aside
+                  className="park-map2d__activity-screen"
+                  aria-label="连接动态滚动屏"
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onWheel={(event) => event.stopPropagation()}
+                >
+                  <div className="park-map2d__activity-head">
+                    <span className="pixel-kicker">LINK LIVE</span>
+                    <strong>连接动态</strong>
+                  </div>
+                  <div className="park-map2d__activity-list">
+                    {visibleEvents.length > 0 ? (
+                      visibleEvents.slice().reverse().map((event) => (
+                        <button
+                          key={event.id}
+                          type="button"
+                          data-active={eventIsFocused(event)}
+                          onClick={() => selectEvent(event)}
+                        >
+                          <span>{timeLabel(event.createdAt)}</span>
+                          <strong>{connectionFeedText(event)}</strong>
+                          <small>{event.summary}</small>
+                        </button>
+                      ))
+                    ) : (
+                      <p className="park-map2d__activity-empty">等待第一条连接动态</p>
+                    )}
+                  </div>
+                </aside>
+
+                <div className="park-map2d__focus" aria-live="polite">
+                  <small>{focusedEvent ? eventMeta(focusedEvent) : "两江校区"}</small>
+                  <strong>{focusedEvent?.title ?? "等待第一场互动"}</strong>
+                  <span>{focusedEvent?.summary ?? "加入游园或投放情绪气球后，这里会同步高亮。"}</span>
+                  {focusedEventPoi ? <em>{focusedEventPoi.note}</em> : null}
+                </div>
+              </aside>
+            ) : null}
           </div>
+
+          {!isAdmin ? (
+            <section className="park-user-dock" aria-label="气泡社交操作">
+              <div className="park-user-dock__intro">
+                <span className="pixel-kicker">SOCIAL MODE</span>
+                <h2>把今天交给一颗气泡</h2>
+                <p>用户端只保留轻社交动作：加入广场、投放心情、接住别人的气泡。</p>
+              </div>
+
+              <div className="park-user-dock__actions">
+                <button type="button" className="primary-button" onClick={handleJoin}>
+                  <UserPlus size={17} aria-hidden />
+                  加入广场
+                </button>
+                <button type="button" className="park-reply-button" disabled={commandLoading || !rosterLoaded} onClick={() => void openReplyComposer(waitingEvent?.id)}>
+                  <Reply size={16} aria-hidden />
+                  {waitingEvent ? "接住一个气泡" : "随机匹配气泡"}
+                </button>
+              </div>
+
+              {activeJoker ? (
+                <form className="park-user-balloon-form" onSubmit={handleDropBalloon}>
+                  <label className="field">
+                    <span>气泡心情</span>
+                    <select value={mood} onChange={(event) => setMood(event.target.value)}>
+                      {moodOptions.map((option) => (
+                        <option key={option} value={option}>
+                          {option}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span>一句短话</span>
+                    <input
+                      value={balloonText}
+                      maxLength={32}
+                      onChange={(event) => setBalloonText(event.target.value)}
+                      placeholder="今天想轻轻打个招呼"
+                    />
+                  </label>
+                  <button type="submit" className="secondary-button" disabled={commandLoading}>
+                    <Send size={16} aria-hidden />
+                    {commandLoading ? "投放中" : "投放气泡"}
+                  </button>
+                </form>
+              ) : (
+                <div className="park-user-empty">
+                  <strong>先拥有你的专属小丑</strong>
+                  <span>去灵魂工坊生成形象后，就能用真实数据库小丑发气泡和回应。</span>
+                  <a className="secondary-button" href="/workshop">去灵魂工坊</a>
+                </div>
+              )}
+
+              <div className="park-user-feed" aria-label="最近回应">
+                <span className="pixel-kicker">LATEST</span>
+                {latestEvents.slice(0, 3).map((event) => (
+                  <button key={event.id} type="button" data-active={focusedEvent?.id === event.id} onClick={() => selectEvent(event)}>
+                    <strong>{event.title}</strong>
+                    <span>{event.summary}</span>
+                  </button>
+                ))}
+              </div>
+
+              {commandError ? <p className="error park-user-error">{commandError}</p> : null}
+            </section>
+          ) : null}
         </section>
 
-        <aside className="park-live2d__side" aria-label="游园互动控制台">
+        {isAdmin ? (
+          <aside className="park-live2d__side" aria-label="游园互动控制台">
           <section className="pixel-panel park-command-panel">
             <div className="section-title">
               <div>
@@ -840,6 +1098,14 @@ export function ParkLive2D() {
                 <span>{focusedClown.energy} · {focusedClown.role}</span>
                 <strong>{focusedClown.name}</strong>
                 <p>{focusedClown.line}</p>
+                {focusedChatUnlock ? (
+                  <div className="park-focus-actions">
+                    <button className="park-chat-action" type="button" disabled={chatOpening} onClick={() => void openFocusedPrivateChat()}>
+                      <MessageCircle size={16} aria-hidden />
+                      {chatOpening ? "打开中" : "私聊"}
+                    </button>
+                  </div>
+                ) : null}
               </div>
             ) : null}
 
@@ -868,7 +1134,8 @@ export function ParkLive2D() {
               ))}
             </div>
           </section>
-        </aside>
+          </aside>
+        ) : null}
       </div>
       {replyDraft ? (
         <div className="park-reply-modal" role="dialog" aria-modal="true" aria-labelledby="parkReplyTitle">
@@ -929,6 +1196,9 @@ export function ParkLive2D() {
             </div>
           </div>
         </div>
+      ) : null}
+      {activeChatRoom && activeJoker ? (
+        <ChatRoom room={activeChatRoom} currentJoker={activeJoker} onClose={() => setActiveChatRoom(null)} />
       ) : null}
     </section>
   );

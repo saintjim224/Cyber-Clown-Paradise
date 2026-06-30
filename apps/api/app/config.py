@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -22,6 +23,11 @@ class Settings(BaseSettings):
     media_retention_hours: int = 24
     autonomy_tick_seconds: int = 45
     triposr_endpoint_url: str = ""
+    admin_username: str = "admin"
+    admin_password: str = ""
+    admin_secret_key: str = ""
+    admin_session_seconds: int = 60 * 60 * 8
+    admin_super_hosts: str = "127.0.0.1,::1,localhost"
     testing: bool = Field(default=False)
 
     model_config = SettingsConfigDict(
@@ -40,3 +46,42 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def _clean_env_value(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
+def _admin_env_file_overrides() -> dict[str, str]:
+    env_file = Settings.model_config.get("env_file") or ".env"
+    env_path = Path(str(env_file))
+    if not env_path.exists():
+        return {}
+
+    admin_keys = {
+        "ADMIN_USERNAME": "admin_username",
+        "ADMIN_PASSWORD": "admin_password",
+        "ADMIN_SECRET_KEY": "admin_secret_key",
+        "ADMIN_SESSION_SECONDS": "admin_session_seconds",
+        "ADMIN_SUPER_HOSTS": "admin_super_hosts",
+    }
+    values: dict[str, str] = {}
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        field_name = admin_keys.get(key.strip())
+        if field_name:
+            values[field_name] = _clean_env_value(value)
+    return values
+
+
+def get_runtime_settings() -> Settings:
+    settings = Settings()
+    if settings.testing:
+        return settings
+    return Settings(**_admin_env_file_overrides())

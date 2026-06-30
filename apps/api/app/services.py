@@ -1,18 +1,32 @@
 import math
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import desc, or_, select
+from sqlalchemy import delete, desc, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.ai_adapter import JokerAIAdapter
 from app.config import Settings
-from app.models import AvatarJob, EmoBalloon, HealAction, InteractionEvent, JokerProfile, JokerRelationship, ModerationLog
+from app.models import (
+    AvatarJob,
+    ChatMessage,
+    ChatRoom,
+    EmoBalloon,
+    HealAction,
+    InteractionEvent,
+    JokerProfile,
+    JokerRelationship,
+    MediaAsset,
+    ModerationLog,
+    UserSession,
+    now_utc,
+)
 from app.safety import clamp_joker_line, moderate_text
 from app.schemas import (
     AvatarJobCreate,
     BalloonCreate,
+    ChatMessageCreate,
     HealActionCreate,
     JokerCreate,
     JokerDraftCreate,
@@ -24,6 +38,26 @@ from app.schemas import (
 HEALER_ENERGY_DELTA = 1
 OWNER_ENERGY_DELTA = 2
 AFFINITY_DELTA = 3
+CHAT_AFFINITY_UNLOCK_SCORE = 9
+CHAT_INTERACTION_UNLOCK_COUNT = 3
+CHAT_PRIVATE_MESSAGE_LIMIT = 200
+CHAT_LOCATION_MESSAGE_LIMIT = 500
+CHAT_LOCATION_TTL_HOURS = 24
+CHAT_LOCATION_PRESENCE_MINUTES = 5
+CHAT_MESSAGE_LIMIT = CHAT_PRIVATE_MESSAGE_LIMIT
+CHAT_MESSAGE_MIN_INTERVAL_SECONDS = 0.5
+CHAT_LOCATION_MESSAGE_MIN_INTERVAL_SECONDS = 1.0
+CHAT_LOCATIONS = (
+    {"id": "academic-plaza", "label": "教学楼广场", "note": "致知、笃行、敬业、勤业一带的学习楼群公共频道。"},
+    {"id": "canteen", "label": "食堂", "note": "北苑、西苑、东苑食堂共享的吃饭碰头频道。"},
+    {"id": "library", "label": "图书馆", "note": "图书馆和湖畔之间的安静搭话频道。"},
+    {"id": "sports-field", "label": "运动场", "note": "南北运动场和北苑操场的加油频道。"},
+    {"id": "central-garden", "label": "中心花园", "note": "毓秀湖、罗马广场之间的低压散步频道。"},
+    {"id": "clown-theater", "label": "小丑剧场", "note": "生活活动中心附近的演出、回放和热闹集合频道。"},
+    {"id": "bus-stop", "label": "校车站", "note": "中门、北门和小北门的来去集合频道。"},
+    {"id": "dormitory", "label": "宿舍区", "note": "北苑、西苑、东苑宿舍共享的夜间回访频道。"},
+)
+CHAT_LOCATION_IDS = {location["id"] for location in CHAT_LOCATIONS}
 
 
 def _simple_embedding(text: str) -> list[float]:
@@ -325,6 +359,8 @@ class HealService:
         relationship.affinity_score = (relationship.affinity_score or 0) + AFFINITY_DELTA
         relationship.interaction_count = (relationship.interaction_count or 0) + 1
         relationship.last_action_id = action.id
+        if ChatService(self.session).relationship_chat_unlocked(relationship):
+            await ChatService(self.session).ensure_private_room_for_pair(healer.id, owner.id)
         self.session.add(
             InteractionEvent(
                 actor_id=healer.id,
@@ -436,12 +472,33 @@ class ReplayService:
                 await self.session.execute(select(JokerProfile).where(JokerProfile.id.in_(other_ids)))
             ).scalars().all()
             other_jokers = {item.id: item for item in others}
+        chat_rooms_by_peer: dict[str, ChatRoom] = {}
+        if other_ids:
+            room_rows = (
+                await self.session.execute(
+                    select(ChatRoom).where(
+                        ChatRoom.room_type == "private",
+                        or_(
+                            (ChatRoom.joker_a_id == joker.id) & (ChatRoom.joker_b_id.in_(other_ids)),
+                            (ChatRoom.joker_b_id == joker.id) & (ChatRoom.joker_a_id.in_(other_ids)),
+                        ),
+                    )
+                )
+            ).scalars().all()
+            for room in room_rows:
+                peer_id = room.joker_b_id if room.joker_a_id == joker.id else room.joker_a_id
+                if peer_id:
+                    chat_rooms_by_peer[peer_id] = room
         relationships = []
         for relationship in relationship_rows:
             other_id = relationship.joker_b_id if relationship.joker_a_id == joker.id else relationship.joker_a_id
             other = other_jokers.get(other_id)
             if not other:
                 continue
+            chat_unlocked = (
+                (relationship.affinity_score or 0) >= CHAT_AFFINITY_UNLOCK_SCORE
+                and (relationship.interaction_count or 0) >= CHAT_INTERACTION_UNLOCK_COUNT
+            )
             relationships.append(
                 {
                     "joker": JokerBriefOut.model_validate(other),
@@ -449,6 +506,8 @@ class ReplayService:
                     "interaction_count": relationship.interaction_count,
                     "last_action_id": relationship.last_action_id,
                     "updated_at": relationship.updated_at,
+                    "chat_unlocked": chat_unlocked,
+                    "chat_room_id": chat_rooms_by_peer.get(other_id).id if other_id in chat_rooms_by_peer else None,
                 }
             )
         received_replies = [
@@ -459,7 +518,37 @@ class ReplayService:
             self._reply_record(action, balloon, row_responder, row_recipient)
             for action, balloon, row_responder, row_recipient in sent_rows
         ]
-        return joker, list(balloons), list(actions), list(events), received_replies, sent_replies, relationships
+        location_labels = {location["id"]: location["label"] for location in CHAT_LOCATIONS}
+        public_footprint_rows = (
+            await self.session.execute(
+                select(ChatMessage, ChatRoom)
+                .join(ChatRoom, ChatMessage.room_id == ChatRoom.id)
+                .where(ChatRoom.room_type == "location", ChatMessage.sender_id == joker.id)
+                .order_by(desc(ChatMessage.created_at), desc(ChatMessage.id))
+                .limit(10)
+            )
+        ).all()
+        public_footprints = [
+            {
+                "id": message.id,
+                "room_id": message.room_id,
+                "location_id": room.location_id or "",
+                "location_label": location_labels.get(room.location_id or "", room.location_id or "公共池"),
+                "content_safe": message.content_safe,
+                "created_at": message.created_at,
+            }
+            for message, room in public_footprint_rows
+        ]
+        return (
+            joker,
+            list(balloons),
+            list(actions),
+            list(events),
+            received_replies,
+            sent_replies,
+            relationships,
+            public_footprints,
+        )
 
 
 class AvatarService:
@@ -502,9 +591,601 @@ class AvatarService:
         return job
 
 
+class ChatService:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def current_joker(self, owner_session_id: str) -> JokerProfile:
+        result = await self.session.execute(
+            select(JokerProfile).where(JokerProfile.owner_session_id == owner_session_id)
+        )
+        joker = result.scalar_one_or_none()
+        if not joker:
+            raise ValueError("no_active_joker")
+        return joker
+
+    def _private_pair(self, left_id: str, right_id: str) -> tuple[str, str]:
+        first, second = sorted([left_id, right_id])
+        return first, second
+
+    async def _relationship_for_pair(self, left_id: str, right_id: str) -> JokerRelationship | None:
+        joker_a_id, joker_b_id = self._private_pair(left_id, right_id)
+        result = await self.session.execute(
+            select(JokerRelationship).where(
+                JokerRelationship.joker_a_id == joker_a_id,
+                JokerRelationship.joker_b_id == joker_b_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    def relationship_chat_unlocked(self, relationship: JokerRelationship | None) -> bool:
+        if not relationship:
+            return False
+        return (
+            (relationship.affinity_score or 0) >= CHAT_AFFINITY_UNLOCK_SCORE
+            and (relationship.interaction_count or 0) >= CHAT_INTERACTION_UNLOCK_COUNT
+        )
+
+    async def _peer_for_room(self, room: ChatRoom, current_joker_id: str) -> JokerProfile | None:
+        if room.room_type != "private":
+            return None
+        peer_id = room.joker_b_id if room.joker_a_id == current_joker_id else room.joker_a_id
+        if not peer_id:
+            return None
+        return await self.session.get(JokerProfile, peer_id)
+
+    async def _room_out(self, room: ChatRoom, current_joker_id: str) -> dict:
+        peer = await self._peer_for_room(room, current_joker_id)
+        return {
+            "id": room.id,
+            "room_type": room.room_type,
+            "joker_a_id": room.joker_a_id,
+            "joker_b_id": room.joker_b_id,
+            "location_id": room.location_id,
+            "created_at": room.created_at,
+            "last_message_at": room.last_message_at,
+            "peer": JokerBriefOut.model_validate(peer) if peer else None,
+        }
+
+    async def _message_out(self, message: ChatMessage, sender: JokerProfile | None = None) -> dict:
+        sender = sender or await self.session.get(JokerProfile, message.sender_id)
+        return {
+            "id": message.id,
+            "room_id": message.room_id,
+            "sender_id": message.sender_id,
+            "sender": JokerBriefOut.model_validate(sender) if sender else None,
+            "content_safe": message.content_safe,
+            "created_at": message.created_at,
+        }
+
+    async def message_out(self, message: ChatMessage) -> dict:
+        return await self._message_out(message)
+
+    def list_locations(self) -> list[dict[str, str]]:
+        return [dict(location) for location in CHAT_LOCATIONS]
+
+    async def get_or_create_private_room(self, owner_session_id: str, other_joker_id: str) -> dict:
+        current = await self.current_joker(owner_session_id)
+        if current.id == other_joker_id:
+            raise ValueError("cannot_chat_self")
+        other = await self.session.get(JokerProfile, other_joker_id)
+        if not other:
+            raise ValueError("joker_not_found")
+        relationship = await self._relationship_for_pair(current.id, other.id)
+        if not self.relationship_chat_unlocked(relationship):
+            raise ValueError("chat_locked")
+
+        room = await self.ensure_private_room_for_pair(current.id, other.id)
+        await self.session.commit()
+        await self.session.refresh(room)
+        return await self._room_out(room, current.id)
+
+    async def ensure_private_room_for_pair(self, left_id: str, right_id: str) -> ChatRoom:
+        joker_a_id, joker_b_id = self._private_pair(left_id, right_id)
+        result = await self.session.execute(
+            select(ChatRoom).where(
+                ChatRoom.room_type == "private",
+                ChatRoom.joker_a_id == joker_a_id,
+                ChatRoom.joker_b_id == joker_b_id,
+            )
+        )
+        room = result.scalar_one_or_none()
+        if not room:
+            room = ChatRoom(room_type="private", joker_a_id=joker_a_id, joker_b_id=joker_b_id)
+            self.session.add(room)
+            await self.session.flush()
+        return room
+
+    async def get_or_create_location_room(self, owner_session_id: str, location_id: str) -> dict:
+        current = await self.current_joker(owner_session_id)
+        if location_id not in CHAT_LOCATION_IDS:
+            raise ValueError("chat_location_not_found")
+        result = await self.session.execute(
+            select(ChatRoom).where(
+                ChatRoom.room_type == "location",
+                ChatRoom.location_id == location_id,
+            )
+        )
+        room = result.scalar_one_or_none()
+        if not room:
+            room = ChatRoom(room_type="location", location_id=location_id)
+            self.session.add(room)
+            await self.session.commit()
+            await self.session.refresh(room)
+        return await self._room_out(room, current.id)
+
+    async def location_presence(
+        self,
+        owner_session_id: str,
+        location_id: str,
+        online_jokers: list[dict] | None = None,
+    ) -> dict:
+        await self.current_joker(owner_session_id)
+        if location_id not in CHAT_LOCATION_IDS:
+            raise ValueError("chat_location_not_found")
+
+        result = await self.session.execute(
+            select(ChatRoom).where(
+                ChatRoom.room_type == "location",
+                ChatRoom.location_id == location_id,
+            )
+        )
+        room = result.scalar_one_or_none()
+        if not room:
+            return {
+                "location_id": location_id,
+                "room_id": None,
+                "active_count": 0,
+                "active_jokers": [],
+            }
+
+        active_by_id = {item["id"]: item for item in online_jokers or [] if item.get("id")}
+        cutoff = now_utc() - timedelta(minutes=CHAT_LOCATION_PRESENCE_MINUTES)
+        recent_sender_ids = list(
+            (
+                await self.session.execute(
+                    select(ChatMessage.sender_id)
+                    .where(ChatMessage.room_id == room.id, ChatMessage.created_at >= cutoff)
+                    .distinct()
+                )
+            ).scalars()
+        )
+        missing_ids = [sender_id for sender_id in recent_sender_ids if sender_id not in active_by_id]
+        if missing_ids:
+            senders = (
+                await self.session.execute(select(JokerProfile).where(JokerProfile.id.in_(missing_ids)))
+            ).scalars().all()
+            for sender in senders:
+                active_by_id[sender.id] = JokerBriefOut.model_validate(sender).model_dump(mode="json")
+
+        return {
+            "location_id": location_id,
+            "room_id": room.id,
+            "active_count": len(active_by_id),
+            "active_jokers": list(active_by_id.values()),
+        }
+
+    async def private_unlocks(self, owner_session_id: str) -> list[dict]:
+        current = await self.current_joker(owner_session_id)
+        rows = (
+            await self.session.execute(
+                select(JokerRelationship).where(
+                    or_(
+                        JokerRelationship.joker_a_id == current.id,
+                        JokerRelationship.joker_b_id == current.id,
+                    )
+                )
+            )
+        ).scalars().all()
+        peer_ids = {
+            row.joker_b_id if row.joker_a_id == current.id else row.joker_a_id
+            for row in rows
+            if self.relationship_chat_unlocked(row)
+        }
+        if not peer_ids:
+            return []
+        peers = (
+            await self.session.execute(select(JokerProfile).where(JokerProfile.id.in_(peer_ids)))
+        ).scalars().all()
+        peers_by_id = {peer.id: peer for peer in peers}
+        rooms = (
+            await self.session.execute(
+                select(ChatRoom).where(
+                    ChatRoom.room_type == "private",
+                    or_(
+                        (ChatRoom.joker_a_id == current.id) & (ChatRoom.joker_b_id.in_(peer_ids)),
+                        (ChatRoom.joker_b_id == current.id) & (ChatRoom.joker_a_id.in_(peer_ids)),
+                    ),
+                )
+            )
+        ).scalars().all()
+        rooms_by_peer: dict[str, ChatRoom] = {}
+        for room in rooms:
+            peer_id = room.joker_b_id if room.joker_a_id == current.id else room.joker_a_id
+            if peer_id:
+                rooms_by_peer[peer_id] = room
+
+        result = []
+        for row in rows:
+            peer_id = row.joker_b_id if row.joker_a_id == current.id else row.joker_a_id
+            peer = peers_by_id.get(peer_id)
+            if not peer or not self.relationship_chat_unlocked(row):
+                continue
+            result.append(
+                {
+                    "joker": JokerBriefOut.model_validate(peer),
+                    "affinity_score": row.affinity_score,
+                    "interaction_count": row.interaction_count,
+                    "last_action_id": row.last_action_id,
+                    "updated_at": row.updated_at,
+                    "chat_unlocked": True,
+                    "chat_room_id": rooms_by_peer.get(peer_id).id if peer_id in rooms_by_peer else None,
+                }
+            )
+        return result
+
+    async def room_for_participant(self, room_id: str, owner_session_id: str) -> tuple[ChatRoom, JokerProfile]:
+        current = await self.current_joker(owner_session_id)
+        room = await self.session.get(ChatRoom, room_id)
+        if not room:
+            raise ValueError("chat_room_not_found")
+        if room.room_type == "private" and current.id not in {room.joker_a_id, room.joker_b_id}:
+            raise ValueError("chat_room_forbidden")
+        return room, current
+
+    def _message_limit_for_room(self, room: ChatRoom) -> int:
+        return CHAT_LOCATION_MESSAGE_LIMIT if room.room_type == "location" else CHAT_PRIVATE_MESSAGE_LIMIT
+
+    def _message_interval_for_room(self, room: ChatRoom) -> float:
+        return CHAT_LOCATION_MESSAGE_MIN_INTERVAL_SECONDS if room.room_type == "location" else CHAT_MESSAGE_MIN_INTERVAL_SECONDS
+
+    async def _cleanup_expired_messages(self, room: ChatRoom, now: datetime) -> None:
+        if room.room_type != "location":
+            return
+        cutoff = now - timedelta(hours=CHAT_LOCATION_TTL_HOURS)
+        await self.session.execute(
+            delete(ChatMessage).where(
+                ChatMessage.room_id == room.id,
+                ChatMessage.created_at < cutoff,
+            )
+        )
+
+    async def list_messages(self, room_id: str, owner_session_id: str, limit: int | None = None) -> list[dict]:
+        room, _ = await self.room_for_participant(room_id, owner_session_id)
+        await self._cleanup_expired_messages(room, now_utc())
+        if room.room_type == "location":
+            await self.session.commit()
+        max_limit = self._message_limit_for_room(room)
+        message_limit = max_limit if limit is None else max(1, min(limit, max_limit))
+        result = await self.session.execute(
+            select(ChatMessage)
+            .where(ChatMessage.room_id == room_id)
+            .order_by(desc(ChatMessage.created_at), desc(ChatMessage.id))
+            .limit(message_limit)
+        )
+        messages = list(reversed(result.scalars().all()))
+        sender_ids = {message.sender_id for message in messages}
+        senders_by_id: dict[str, JokerProfile] = {}
+        if sender_ids:
+            senders = (
+                await self.session.execute(select(JokerProfile).where(JokerProfile.id.in_(sender_ids)))
+            ).scalars().all()
+            senders_by_id = {sender.id: sender for sender in senders}
+        return [await self._message_out(message, senders_by_id.get(message.sender_id)) for message in messages]
+
+    async def _enforce_message_rate_limit(self, room: ChatRoom, sender_id: str, now: datetime) -> None:
+        interval_seconds = self._message_interval_for_room(room)
+        if interval_seconds <= 0:
+            return
+        result = await self.session.execute(
+            select(ChatMessage.created_at)
+            .where(ChatMessage.room_id == room.id, ChatMessage.sender_id == sender_id)
+            .order_by(desc(ChatMessage.created_at), desc(ChatMessage.id))
+            .limit(1)
+        )
+        latest = result.scalar_one_or_none()
+        if not latest:
+            return
+        if latest.tzinfo is None:
+            latest = latest.replace(tzinfo=timezone.utc)
+        if (now - latest).total_seconds() < interval_seconds:
+            raise ValueError("chat_rate_limited")
+
+    async def create_message(self, room_id: str, owner_session_id: str, payload: ChatMessageCreate) -> ChatMessage:
+        room, sender = await self.room_for_participant(room_id, owner_session_id)
+        created_at = now_utc()
+        await self._cleanup_expired_messages(room, created_at)
+        await self._enforce_message_rate_limit(room, sender.id, created_at)
+        moderation = moderate_text(payload.content)
+        self.session.add(
+            ModerationLog(
+                joker_id=sender.id,
+                input_kind="chat_message",
+                flagged=moderation.flagged,
+                categories=moderation.categories,
+                action_taken=moderation.action_taken,
+            )
+        )
+        content_safe = moderation.cleaned_text[:500]
+        if moderation.action_taken == "block":
+            content_safe = "这条消息需要先冷静一下，系统已经替你拦住了。"
+        message = ChatMessage(
+            room_id=room.id,
+            sender_id=sender.id,
+            content=payload.content,
+            content_safe=content_safe,
+            created_at=created_at,
+        )
+        room.last_message_at = created_at
+        self.session.add(message)
+        await self.session.flush()
+
+        old_ids = list(
+            (
+                await self.session.execute(
+                    select(ChatMessage.id)
+                    .where(ChatMessage.room_id == room.id)
+                    .order_by(desc(ChatMessage.created_at), desc(ChatMessage.id))
+                    .offset(self._message_limit_for_room(room))
+                )
+            ).scalars()
+        )
+        if old_ids:
+            await self.session.execute(delete(ChatMessage).where(ChatMessage.id.in_(old_ids)))
+
+        await self.session.commit()
+        await self.session.refresh(message)
+        return message
+
+    async def cleanup_stale_location_rooms(self, days: int = 7) -> int:
+        cutoff = now_utc() - timedelta(days=max(1, days))
+        empty_room_ids = list(
+            (
+                await self.session.execute(
+                    select(ChatRoom.id)
+                    .where(ChatRoom.room_type == "location")
+                    .where(~select(ChatMessage.id).where(ChatMessage.room_id == ChatRoom.id).exists())
+                    .where(
+                        or_(
+                            ChatRoom.last_message_at < cutoff,
+                            (ChatRoom.last_message_at.is_(None)) & (ChatRoom.created_at < cutoff),
+                        )
+                    )
+                )
+            ).scalars()
+        )
+        if not empty_room_ids:
+            return 0
+        deleted = await self.session.execute(delete(ChatRoom).where(ChatRoom.id.in_(empty_room_ids)))
+        await self.session.commit()
+        return max(int(deleted.rowcount or 0), 0)
+
+
+class AdminService:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def _count(self, model, *criteria) -> int:
+        statement = select(func.count()).select_from(model)
+        if criteria:
+            statement = statement.where(*criteria)
+        result = await self.session.execute(statement)
+        return int(result.scalar_one())
+
+    async def system_stats(self) -> dict[str, int]:
+        return {
+            "joker_count": await self._count(JokerProfile),
+            "user_session_count": await self._count(UserSession),
+            "balloon_count": await self._count(EmoBalloon),
+            "pending_balloon_count": await self._count(EmoBalloon, EmoBalloon.status == "pending"),
+            "healed_balloon_count": await self._count(EmoBalloon, EmoBalloon.status == "healed"),
+            "heal_action_count": await self._count(HealAction),
+            "event_count": await self._count(InteractionEvent),
+            "avatar_job_count": await self._count(AvatarJob),
+            "media_asset_count": await self._count(MediaAsset),
+            "moderation_log_count": await self._count(ModerationLog),
+            "chat_room_count": await self._count(ChatRoom),
+            "chat_message_count": await self._count(ChatMessage),
+        }
+
+    async def list_jokers(self, limit: int = 200) -> list[dict]:
+        result = await self.session.execute(
+            select(JokerProfile).order_by(desc(JokerProfile.updated_at)).limit(max(1, min(limit, 500)))
+        )
+        jokers = result.scalars().all()
+        rows = []
+        for joker in jokers:
+            rows.append(
+                {
+                    "id": joker.id,
+                    "owner_session_id": joker.owner_session_id,
+                    "nickname": joker.nickname,
+                    "mbti": joker.mbti,
+                    "constellation": joker.constellation,
+                    "social_energy": joker.social_energy,
+                    "persona": joker.persona,
+                    "verdict": joker.verdict,
+                    "qr_token": joker.qr_token,
+                    "avatar_status": joker.avatar_status,
+                    "energy_score": joker.energy_score or 0,
+                    "created_at": joker.created_at,
+                    "updated_at": joker.updated_at,
+                    "balloon_count": await self._count(EmoBalloon, EmoBalloon.owner_id == joker.id),
+                    "action_count": await self._count(
+                        HealAction,
+                        or_(HealAction.healer_id == joker.id, HealAction.recipient_id == joker.id),
+                    ),
+                    "event_count": await self._count(
+                        InteractionEvent,
+                        or_(InteractionEvent.actor_id == joker.id, InteractionEvent.target_id == joker.id),
+                    ),
+                }
+            )
+        return rows
+
+    async def _chat_message_out(self, message: ChatMessage, sender: JokerProfile | None = None) -> dict:
+        sender = sender or await self.session.get(JokerProfile, message.sender_id)
+        return {
+            "id": message.id,
+            "room_id": message.room_id,
+            "sender_id": message.sender_id,
+            "sender": JokerBriefOut.model_validate(sender) if sender else None,
+            "content_safe": message.content_safe,
+            "created_at": message.created_at,
+        }
+
+    async def list_location_chat_rooms(self, limit: int = 50, message_limit: int = 5) -> list[dict]:
+        rooms = (
+            await self.session.execute(
+                select(ChatRoom)
+                .where(ChatRoom.room_type == "location")
+                .order_by(desc(ChatRoom.last_message_at), desc(ChatRoom.created_at))
+                .limit(max(1, min(limit, 100)))
+            )
+        ).scalars().all()
+        rows = []
+        for room in rooms:
+            messages = list(
+                reversed(
+                    (
+                        await self.session.execute(
+                            select(ChatMessage)
+                            .where(ChatMessage.room_id == room.id)
+                            .order_by(desc(ChatMessage.created_at), desc(ChatMessage.id))
+                            .limit(max(1, min(message_limit, 20)))
+                        )
+                    ).scalars().all()
+                )
+            )
+            sender_ids = {message.sender_id for message in messages}
+            senders_by_id: dict[str, JokerProfile] = {}
+            if sender_ids:
+                senders = (
+                    await self.session.execute(select(JokerProfile).where(JokerProfile.id.in_(sender_ids)))
+                ).scalars().all()
+                senders_by_id = {sender.id: sender for sender in senders}
+            rows.append(
+                {
+                    "id": room.id,
+                    "room_type": room.room_type,
+                    "location_id": room.location_id,
+                    "joker_a_id": room.joker_a_id,
+                    "joker_b_id": room.joker_b_id,
+                    "created_at": room.created_at,
+                    "last_message_at": room.last_message_at,
+                    "message_count": await self._count(ChatMessage, ChatMessage.room_id == room.id),
+                    "recent_messages": [
+                        await self._chat_message_out(message, senders_by_id.get(message.sender_id))
+                        for message in messages
+                    ],
+                }
+            )
+        return rows
+
+    async def delete_chat_message(self, message_id: str) -> dict[str, int]:
+        message = await self.session.get(ChatMessage, message_id)
+        if not message:
+            raise ValueError("chat_message_not_found")
+        room = await self.session.get(ChatRoom, message.room_id)
+        await self.session.delete(message)
+        await self.session.flush()
+        if room:
+            latest = (
+                await self.session.execute(
+                    select(ChatMessage.created_at)
+                    .where(ChatMessage.room_id == room.id)
+                    .order_by(desc(ChatMessage.created_at), desc(ChatMessage.id))
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            room.last_message_at = latest
+        await self.session.commit()
+        return {"chat_messages": 1}
+
+    async def _delete_count(self, model, *criteria) -> int:
+        result = await self.session.execute(delete(model).where(*criteria))
+        return max(int(result.rowcount or 0), 0)
+
+    async def delete_joker(self, joker_id: str) -> dict[str, int]:
+        joker = await self.session.get(JokerProfile, joker_id)
+        if not joker:
+            raise ValueError("joker_not_found")
+
+        owned_balloon_ids = list(
+            (
+                await self.session.execute(
+                    select(EmoBalloon.id).where(EmoBalloon.owner_id == joker_id)
+                )
+            ).scalars()
+        )
+
+        action_criteria = [HealAction.healer_id == joker_id, HealAction.recipient_id == joker_id]
+        if owned_balloon_ids:
+            action_criteria.append(HealAction.balloon_id.in_(owned_balloon_ids))
+        related_action_ids = list(
+            (await self.session.execute(select(HealAction.id).where(or_(*action_criteria)))).scalars()
+        )
+        related_room_ids = list(
+            (
+                await self.session.execute(
+                    select(ChatRoom.id).where(
+                        or_(ChatRoom.joker_a_id == joker_id, ChatRoom.joker_b_id == joker_id)
+                    )
+                )
+            ).scalars()
+        )
+
+        counts: dict[str, int] = {}
+        if related_room_ids:
+            counts["chat_messages"] = await self._delete_count(
+                ChatMessage,
+                or_(ChatMessage.room_id.in_(related_room_ids), ChatMessage.sender_id == joker_id),
+            )
+            counts["chat_rooms"] = await self._delete_count(ChatRoom, ChatRoom.id.in_(related_room_ids))
+        else:
+            counts["chat_messages"] = await self._delete_count(ChatMessage, ChatMessage.sender_id == joker_id)
+            counts["chat_rooms"] = 0
+        relationship_criteria = [
+            JokerRelationship.joker_a_id == joker_id,
+            JokerRelationship.joker_b_id == joker_id,
+        ]
+        if related_action_ids:
+            relationship_criteria.append(JokerRelationship.last_action_id.in_(related_action_ids))
+        counts["relationships"] = await self._delete_count(JokerRelationship, or_(*relationship_criteria))
+        counts["events"] = await self._delete_count(
+            InteractionEvent,
+            or_(InteractionEvent.actor_id == joker_id, InteractionEvent.target_id == joker_id),
+        )
+        counts["heal_actions"] = await self._delete_count(HealAction, or_(*action_criteria))
+        counts["avatar_jobs"] = await self._delete_count(AvatarJob, AvatarJob.joker_id == joker_id)
+        counts["media_assets"] = await self._delete_count(MediaAsset, MediaAsset.joker_id == joker_id)
+        counts["moderation_logs"] = await self._delete_count(ModerationLog, ModerationLog.joker_id == joker_id)
+
+        unlinked = await self.session.execute(
+            update(EmoBalloon)
+            .where(EmoBalloon.healed_by_id == joker_id, EmoBalloon.owner_id != joker_id)
+            .values(healed_by_id=None, status="pending")
+        )
+        counts["unlinked_balloons"] = max(int(unlinked.rowcount or 0), 0)
+
+        if owned_balloon_ids:
+            counts["balloons"] = await self._delete_count(EmoBalloon, EmoBalloon.id.in_(owned_balloon_ids))
+        else:
+            counts["balloons"] = 0
+
+        counts["jokers"] = await self._delete_count(JokerProfile, JokerProfile.id == joker_id)
+        await self.session.commit()
+        return counts
+
+
 async def recent_events(session: AsyncSession, limit: int = 40) -> list[InteractionEvent]:
     result = await session.execute(select(InteractionEvent).order_by(desc(InteractionEvent.created_at)).limit(limit))
     return list(reversed(result.scalars().all()))
+
+
+async def park_jokers(session: AsyncSession, limit: int = 60) -> list[JokerProfile]:
+    result = await session.execute(select(JokerProfile).order_by(desc(JokerProfile.updated_at)).limit(limit))
+    return list(result.scalars().all())
 
 
 async def generate_autonomous_event(session: AsyncSession, settings: Settings) -> InteractionEvent | None:

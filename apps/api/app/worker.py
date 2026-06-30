@@ -1,12 +1,8 @@
 import asyncio
-import logging
 
 from app.config import get_settings
 from app.db import SessionLocal, create_db_schema
-from app.services import AvatarService, generate_autonomous_event
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("cyberjoker-worker")
+from app.services import AvatarService, ChatService, generate_autonomous_event
 
 
 async def run_forever() -> None:
@@ -14,12 +10,9 @@ async def run_forever() -> None:
     await create_db_schema()
     while True:
         async with SessionLocal() as session:
-            avatar = await AvatarService(session).process_one()
-            if avatar:
-                logger.info("avatar job %s moved to %s", avatar.id, avatar.status)
-            event = await generate_autonomous_event(session, settings)
-            if event:
-                logger.info("autonomous event %s generated", event.id)
+            await AvatarService(session).process_one()
+            await generate_autonomous_event(session, settings)
+            await ChatService(session).cleanup_stale_location_rooms()
         await asyncio.sleep(max(5, min(settings.autonomy_tick_seconds, 90)))
 
 
