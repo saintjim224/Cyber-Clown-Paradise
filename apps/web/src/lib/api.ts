@@ -1,4 +1,13 @@
-export const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
+const CONFIGURED_API_BASE = process.env.NEXT_PUBLIC_API_BASE;
+function resolveApiBase() {
+  if (CONFIGURED_API_BASE) return CONFIGURED_API_BASE.replace(/\/$/, "");
+  if (typeof window !== "undefined" && window.location.port === "3000") {
+    return `${window.location.protocol}//${window.location.hostname}:8000`;
+  }
+  return "";
+}
+
+export const API_BASE = resolveApiBase();
 const SITE_ORIGIN = process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/$/, "");
 
 export type StyleTokens = {
@@ -342,6 +351,10 @@ export function parkEntryUrl(token: string) {
 }
 
 export function apiWebSocketUrl(path: string) {
+  if (!API_BASE && typeof window !== "undefined") {
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${protocol}//${window.location.host}${path}`;
+  }
   const base = API_BASE.replace(/^http:/, "ws:").replace(/^https:/, "wss:");
   return `${base}${path}`;
 }

@@ -173,6 +173,8 @@ def is_super_admin_request(request: Request, settings: Settings) -> bool:
         for host in settings.admin_super_hosts.split(",")
         if _normalize_host(host)
     }
+    if "*" in allowed:
+        return True
     client_host = _normalize_host(admin_request_host(request))
     return client_host in allowed
 

@@ -721,6 +721,21 @@ async def test_remote_admin_login_is_not_super_admin():
 
 
 @pytest.mark.asyncio
+async def test_wildcard_super_admin_hosts_allows_remote_admin(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("ADMIN_SUPER_HOSTS", "*")
+    transport = ASGITransport(app=app, client=("192.0.2.24", 43210))
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        login_resp = await client.post(
+            "/api/admin/login",
+            json={"username": "admin", "password": "test-admin-password"},
+        )
+        assert login_resp.status_code == 200, login_resp.text
+        session = login_resp.json()
+        assert session["role"] == "super_admin"
+        assert session["is_super_admin"] is True
+
+
+@pytest.mark.asyncio
 async def test_admin_password_reload_without_api_restart():
     original_password = os.environ["ADMIN_PASSWORD"]
     rotated_password = "rotated-admin-password"

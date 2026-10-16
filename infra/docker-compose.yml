@@ -1,6 +1,7 @@
 services:
   postgres:
     image: pgvector/pgvector:pg16
+    restart: unless-stopped
     environment:
       POSTGRES_USER: joker
       POSTGRES_PASSWORD: joker
@@ -17,6 +18,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     ports:
       - "6379:6379"
     healthcheck:
@@ -27,6 +29,7 @@ services:
 
   minio:
     image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin
@@ -41,8 +44,13 @@ services:
     build:
       context: ..
       dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
     env_file:
       - ../.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://joker:joker@postgres:5432/cyberjoker
+      REDIS_URL: redis://redis:6379/0
+      S3_ENDPOINT_URL: http://minio:9000
     ports:
       - "8000:8000"
     depends_on:
@@ -55,9 +63,14 @@ services:
     build:
       context: ..
       dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
     command: ["python", "-m", "app.worker"]
     env_file:
       - ../.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://joker:joker@postgres:5432/cyberjoker
+      REDIS_URL: redis://redis:6379/0
+      S3_ENDPOINT_URL: http://minio:9000
     depends_on:
       postgres:
         condition: service_healthy
@@ -68,8 +81,17 @@ services:
     build:
       context: ..
       dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_API_BASE: ""
+        NEXT_PUBLIC_SITE_URL: ""
+        NEXT_PUBLIC_AMAP_JSAPI_KEY: ${NEXT_PUBLIC_AMAP_JSAPI_KEY:-}
+        NEXT_PUBLIC_AMAP_SECURITY_JS_CODE: ${NEXT_PUBLIC_AMAP_SECURITY_JS_CODE:-}
+    restart: unless-stopped
+    env_file:
+      - ../.env
     environment:
-      NEXT_PUBLIC_API_BASE: http://localhost:8000
+      NEXT_PUBLIC_API_BASE: ""
+      NEXT_PUBLIC_SITE_URL: ""
     ports:
       - "3000:3000"
     depends_on:
